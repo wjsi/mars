@@ -53,14 +53,8 @@ class FakeExecutionActor(promise.PromiseActor):
             pass
 
     def enqueue_graph(self, session_id, graph_key, graph_ser, io_meta, data_sizes,
-                      priority_data=None, send_addresses=None, succ_keys=None,
-                      pred_keys=None, callback=None):
-        if not pred_keys:
-            self.tell_promise(callback)
-            self._succs[graph_key] = succ_keys
-        else:
-            self._enqueue_callbacks[graph_key] = callback
-            self._undone_preds[graph_key] = set(pred_keys) - self._finished_keys
+                      priority_data=None, send_addresses=None, callback=None):
+        self.tell_promise(callback)
 
     def start_execution(self, session_id, graph_key, send_addresses=None, callback=None):
         if callback:
@@ -181,30 +175,3 @@ class Test(unittest.TestCase):
 
             # test successful entering state
             test_entering_state(OperandState.READY)
-
-    def testOperandPrepush(self, *_):
-        session_id = str(uuid.uuid4())
-        graph_key = str(uuid.uuid4())
-        mock_workers = ['localhost:12345']
-
-        with self._prepare_test_graph(session_id, graph_key, mock_workers) as (pool, graph_ref):
-            input_op_keys, mid_op_key, output_op_keys = self._filter_graph_level_op_keys(graph_ref)
-            fake_exec_ref = pool.create_actor(FakeExecutionActor, 0.5)
-
-            input_refs = [pool.actor_ref(OperandActor.gen_uid(session_id, k)) for k in input_op_keys]
-            mid_ref = pool.actor_ref(OperandActor.gen_uid(session_id, mid_op_key))
-
-            def _fake_raw_execution_ref(*_, **__):
-                return fake_exec_ref
-
-            with patch_method(OperandActor._get_raw_execution_ref, new=_fake_raw_execution_ref),\
-                    patch_method(AssignerActor.get_worker_assignments, new=lambda *_: mock_workers):
-                input_refs[0].start_operand(OperandState.READY)
-                input_refs[1].start_operand(OperandState.READY)
-
-                start_time = time.time()
-                # submission without pre-push will fail
-                while mid_ref.get_state() != OperandState.FINISHED:
-                    pool.sleep(0.1)
-                    if time.time() - start_time > 30:
-                        raise TimeoutError('Check middle chunk state timed out.')

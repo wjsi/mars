@@ -111,17 +111,9 @@ class FakeExecutionActor(SchedulerActor):
 
     @log_unhandled
     def enqueue_graph(self, session_id, graph_key, graph_ser, io_meta, data_sizes,
-                      priority_data=None, send_addresses=None, succ_keys=None,
-                      pred_keys=None, callback=None):
+                      priority_data=None, send_addresses=None, callback=None):
         query_key = (session_id, graph_key)
         assert query_key not in self._graph_records
-
-        pred_keys = pred_keys or ()
-        actual_unfinished = []
-        for k in pred_keys:
-            if k in self._results and self._results[k][1].get('_accept', True):
-                continue
-            actual_unfinished.append(k)
 
         self._graph_records[query_key] = GraphExecutionRecord(
             graph_ser, None,
@@ -129,11 +121,8 @@ class FakeExecutionActor(SchedulerActor):
             shared_input_chunks=set(io_meta.get('shared_input_chunks', [])),
             send_addresses=send_addresses,
             enqueue_callback=callback,
-            succ_keys=succ_keys,
-            undone_pred_keys=actual_unfinished,
         )
-        if not actual_unfinished:
-            self.tell_promise(callback)
+        self.tell_promise(callback)
 
     @log_unhandled
     def dequeue_graph(self, session_id, graph_key):

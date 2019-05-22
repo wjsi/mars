@@ -47,11 +47,6 @@ class OperandActor(BaseOperandActor):
         # ref of ExecutionActor on worker
         self._execution_ref = None
 
-        # set of running predecessors and workers of predecessors,
-        # used to decide whether to pre-push to a worker
-        self._running_preds = set()
-        self._pred_workers = set()
-
         self._data_sizes = None
 
         self._input_worker_scores = dict()
@@ -95,40 +90,6 @@ class OperandActor(BaseOperandActor):
         if target_worker:
             self._target_worker = target_worker
         return super(OperandActor, self).start_operand(state=state, **kwargs)
-
-    def add_running_predecessor(self, op_key, worker):
-        self._running_preds.add(op_key)
-        self._pred_workers.add(worker)
-        if len(self._pred_workers) > 1:
-            # we do not push when multiple workers in input
-            self._pred_workers = set()
-            self._running_preds = set()
-            return
-
-        if self.state != OperandState.UNSCHEDULED:
-            return
-
-        if all(k in self._running_preds for k in self._pred_keys):
-            try:
-                if worker in self._assigned_workers:
-                    return
-                if self._executable_dag is not None:
-                    exec_graph = self._executable_dag
-                else:
-                    exec_graph = self._graph_refs[0].get_executable_operand_dag(self._op_key)
-
-                self._get_execution_ref(address=worker).enqueue_graph(
-                    self._session_id, self._op_key, exec_graph, self._io_meta,
-                    dict(), self._info['optimize'], succ_keys=self._succ_keys,
-                    pred_keys=self._pred_keys, _promise=True) \
-                    .then(functools.partial(self._handle_worker_accept, worker))
-                self._assigned_workers.add(worker)
-                logger.debug('Pre-push operand %s into worker %s.', self._op_key, worker)
-            except:  # noqa: E722
-                logger.exception('Failed to pre-push operand %s', self._op_key)
-            finally:
-                self._pred_workers = set()
-                self._running_preds = set()
 
     def add_finished_predecessor(self, op_key, worker, output_sizes=None):
         super(OperandActor, self).add_finished_predecessor(op_key, worker, output_sizes=output_sizes)
@@ -515,8 +476,7 @@ class OperandActor(BaseOperandActor):
                 with rewrite_worker_errors():
                     self._get_execution_ref(address=worker_ep).enqueue_graph(
                         self._session_id, self._op_key, exec_graph, self._io_meta,
-                        data_sizes, self._info['optimize'], succ_keys=self._succ_keys,
-                        _delay=delay, _promise=True) \
+                        data_sizes, self._info['optimize'], _delay=delay, _promise=True) \
                         .then(functools.partial(self._handle_worker_accept, worker_ep))
             except WorkerDead:
                 logger.debug('Worker %s dead when submitting operand %s into queue',
@@ -578,12 +538,6 @@ class OperandActor(BaseOperandActor):
                          self.worker, self._op_key)
             self._resource_ref.detach_dead_workers([self.worker], _tell=True)
             self.start_operand(OperandState.READY)
-
-        futures = []
-        for out_key in self._succ_keys:
-            futures.append(self._get_operand_actor(out_key).add_running_predecessor(
-                self._op_key, self.worker, _tell=True, _wait=False))
-        [f.result() for f in futures]
 
     @log_unhandled
     def _on_finished(self):
