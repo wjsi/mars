@@ -93,36 +93,20 @@ class FakeExecutionActor(SchedulerActor):
             self.tell_promise(cb, {})
         rec.finish_callbacks = []
 
-        for succ_key in (rec.succ_keys or ()):
-            try:
-                succ_rec = self._graph_records[(session_id, succ_key)]
-            except KeyError:
-                continue
-            succ_rec.undone_pred_keys.difference_update([graph_key])
-            if not succ_rec.undone_pred_keys:
-                self.tell_promise(succ_rec.enqueue_callback)
-
     @log_unhandled
-    def start_execution(self, session_id, graph_key, send_addresses=None, callback=None):
-        rec = self._graph_records[(session_id, graph_key)]
-        if callback:
-            rec.finish_callbacks.append(callback)
-        self.ref().actual_exec(session_id, graph_key, _tell=True, _delay=self._exec_delay)
-
-    @log_unhandled
-    def enqueue_graph(self, session_id, graph_key, graph_ser, io_meta, data_sizes,
-                      priority_data=None, send_addresses=None, callback=None):
+    def execute_graph(self, session_id, graph_key, graph_ser, io_meta, data_sizes,
+                      callback=None):
         query_key = (session_id, graph_key)
         assert query_key not in self._graph_records
 
-        self._graph_records[query_key] = GraphExecutionRecord(
+        rec = self._graph_records[query_key] = GraphExecutionRecord(
             graph_ser, None,
             data_targets=io_meta['chunks'],
             shared_input_chunks=set(io_meta.get('shared_input_chunks', [])),
-            send_addresses=send_addresses,
-            enqueue_callback=callback,
         )
-        self.tell_promise(callback)
+        if callback:
+            rec.finish_callbacks.append(callback)
+        self.ref().actual_exec(session_id, graph_key, _tell=True, _delay=self._exec_delay)
 
     @log_unhandled
     def dequeue_graph(self, session_id, graph_key):

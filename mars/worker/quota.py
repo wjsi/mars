@@ -95,6 +95,9 @@ class QuotaActor(WorkerActor):
         return self._request_quota(keys, values, delta, callback, multiple=True,
                                    make_first=all_allocated)
 
+    def has_pending_requests(self):
+        return bool(self._requests)
+
     @promise.reject_on_exception
     @log_unhandled
     def request_quota(self, key, quota_size, callback=None):

@@ -16,8 +16,9 @@ from collections import defaultdict
 
 from ...operands import ShuffleProxy
 from ...errors import WorkerDead
+from ..utils import rewrite_worker_errors
 from .base import BaseOperandActor
-from .core import register_operand_class, rewrite_worker_errors, OperandState
+from .core import register_operand_class, OperandState
 
 
 class ShuffleProxyActor(BaseOperandActor):
@@ -77,7 +78,7 @@ class ShuffleProxyActor(BaseOperandActor):
             try:
                 with rewrite_worker_errors():
                     self._get_raw_execution_ref(address=worker) \
-                        .send_data_to_workers(self._session_id, data_to_addresses, _tell=True)
+                        .send_data_to_workers(self._session_id, op_key, data_to_addresses, _tell=True)
             except WorkerDead:
                 self._resource_ref.detach_dead_workers([worker], _tell=True)
 

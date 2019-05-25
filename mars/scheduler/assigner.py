@@ -55,7 +55,7 @@ class AssignerActor(SchedulerActor):
 
     def _refresh_worker_metrics(self):
         t = time.time()
-        if self._worker_metrics is None or self._worker_metric_time + 1 < time.time():
+        if self._worker_metrics is None or self._worker_metric_time + 1 < t:
             # update worker metrics from ResourceActor
             self._worker_metrics = self._resource_ref.get_workers_meta()
             self._worker_metric_time = t

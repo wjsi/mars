@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import base64
-import functools
 import logging
 import time
 
@@ -21,9 +20,9 @@ from ...config import options
 from ...errors import ExecutionInterrupted, DependencyMissing, WorkerDead
 from ...operands import Operand
 from ...utils import log_unhandled
-from ..utils import GraphState, array_to_bytes
+from ..utils import GraphState, array_to_bytes, rewrite_worker_errors
 from .base import BaseOperandActor
-from .core import OperandState, OperandPosition, register_operand_class, rewrite_worker_errors
+from .core import OperandState, OperandPosition, register_operand_class
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +113,20 @@ class OperandActor(BaseOperandActor):
             if all(k in OperandState.TERMINATED_STATES for k in states) and self._is_worker_alive():
                 self.ref().free_data(_tell=True)
 
+    def _get_priority_data(self):
+        try:
+            priority_data = self._info['optimize']
+        except KeyError:
+            priority_data = dict()
+
+        return tuple([
+            priority_data.get('depth', 0),
+            priority_data.get('demand_depths', ()),
+            -priority_data.get('successor_size', 0),
+            -priority_data.get('placement_order', 0),
+            priority_data.get('descendant_size', 0),
+        ])
+
     def update_demand_depths(self, depth):
         """
         Update the depth of operand demanding data, or demanding the descendant of data
@@ -138,21 +151,16 @@ class OperandActor(BaseOperandActor):
             optimize_data = self._info['optimize']
         except KeyError:
             optimize_data = self._info['optimize'] = dict()
+
         optimize_data['demand_depths'] = tuple(demand_depths)
         if self._kv_store_ref is not None:
             self._kv_store_ref.write(
                 '%s/optimize/demand_depths' % self._op_path,
                 base64.b64encode(array_to_bytes('I', demand_depths)), _tell=True, _wait=False)
-        futures = []
 
-        # if the operand is already submitted to AssignerActor, we need to update the priority
-        for w in self._assigned_workers:
-            futures.append(self._get_execution_ref(address=w).update_priority(
-                self._session_id, self._op_key, optimize_data, _tell=True, _wait=False))
-
-        dead_workers = set(self._wait_worker_futures(zip(self._assigned_workers, futures)))
-        if dead_workers:
-            self._assigned_workers.difference_update(dead_workers)
+        # if the operand is already submitted to TaskPoolActor, we need to update the priority
+        self._task_pool_ref.update_task_priorities(
+            self._session_id, self._op_key, self._get_priority_data(), _tell=True)
 
         futures = []
         if self.state != OperandState.READY:
@@ -346,37 +354,7 @@ class OperandActor(BaseOperandActor):
         return target_predicts
 
     @log_unhandled
-    def _handle_worker_accept(self, worker):
-        def _dequeue_worker(endpoint, wait=True):
-            try:
-                future = self._get_execution_ref(address=endpoint).dequeue_graph(
-                    self._session_id, self._op_key, _tell=True, _wait=False)
-                if not wait:
-                    return future
-                elif self._wait_worker_futures([(worker, future)]):
-                    raise WorkerDead
-            finally:
-                self._assigned_workers.difference_update((worker,))
-
-        if self._position == OperandPosition.INITIAL:
-            new_worker = self._graph_refs[0].get_operand_target_worker(self._op_key)
-            if new_worker and new_worker != self._target_worker:
-                logger.debug('Cancelling running operand %s on %s, new_target %s',
-                             self._op_key, worker, new_worker)
-                _dequeue_worker(worker)
-                return
-
-        if (self.worker and self.worker != worker) or \
-                (self._target_worker and worker != self._target_worker):
-            logger.debug('Cancelling running operand %s on %s, op_worker %s, op_target %s',
-                         self._op_key, worker, self.worker, self._target_worker)
-            _dequeue_worker(worker)
-            return
-        elif self.worker is not None:
-            logger.debug('Worker for operand %s already assigned', self._op_key)
-            return
-
-        # worker assigned, submit job
+    def handle_worker_accept(self, worker):
         if self.state in (OperandState.CANCELLED, OperandState.CANCELLING):
             self.ref().start_operand(_tell=True)
             return
@@ -384,14 +362,6 @@ class OperandActor(BaseOperandActor):
         if worker != self.worker:
             self._execution_ref = None
         self.worker = worker
-        cancel_futures = []
-        for w in list(self._assigned_workers):
-            if w != worker:
-                logger.debug('Cancelling running operand %s on %s, when deciding to run on %s',
-                             self._op_key, w, worker)
-                cancel_futures.append((w, _dequeue_worker(w, wait=False)))
-
-        self._wait_worker_futures(cancel_futures)
         self._assigned_workers = set()
 
         target_predicts = self._get_target_predicts(worker)
@@ -413,16 +383,19 @@ class OperandActor(BaseOperandActor):
                 self._session_id, broadcast_chunk_keys, broadcast_ep_groups,
                 _tell=True, _wait=False)
 
-        # submit job
         logger.debug('Start running operand %s on %s', self._op_key, worker)
+
+        # register target worker
         self._execution_ref = self._get_execution_ref()
         try:
             with rewrite_worker_errors():
-                self._execution_ref.start_execution(
-                    self._session_id, self._op_key, send_addresses=target_predicts, _promise=True)
+                if target_predicts:
+                    self._get_execution_ref().send_data_to_workers(
+                        self._session_id, self._op_key, target_predicts, _tell=True)
         except WorkerDead:
             self._resource_ref.detach_dead_workers([self.worker], _tell=True)
             return
+
         # here we start running immediately to avoid accidental state change
         # and potential submission
         self.start_operand(OperandState.RUNNING)
@@ -465,28 +438,12 @@ class OperandActor(BaseOperandActor):
         logger.debug('Operand %s assigned to run on workers %r, now it has %r',
                      self._op_key, new_assignment, self._assigned_workers)
 
-        dead_workers = set()
-        if 'input_data_metas' not in self._io_meta and self._executable_dag is not None:
-            exec_graph = self._executable_dag
-        else:
-            exec_graph = self._graph_refs[0].get_executable_operand_dag(self._op_key, input_chunks)
-
-        for worker_ep in new_assignment:
-            try:
-                with rewrite_worker_errors():
-                    self._get_execution_ref(address=worker_ep).enqueue_graph(
-                        self._session_id, self._op_key, exec_graph, self._io_meta,
-                        data_sizes, self._info['optimize'], _delay=delay, _promise=True) \
-                        .then(functools.partial(self._handle_worker_accept, worker_ep))
-            except WorkerDead:
-                logger.debug('Worker %s dead when submitting operand %s into queue',
-                             worker_ep, self._op_key)
-                dead_workers.add(worker_ep)
-                self._assigned_workers.difference_update([worker_ep])
-        if dead_workers:
-            self._resource_ref.detach_dead_workers(list(dead_workers), _tell=True)
-            if not self._assigned_workers:
-                self.ref().start_operand(_tell=True)
+        serialized_exec_graph = self._graph_refs[0].get_executable_operand_dag(self._op_key, input_chunks)
+        self._task_pool_ref.submit_task(
+            self._session_id, self._op_key, self._get_priority_data(), new_assignment,
+            self._session_id, self._op_key, serialized_exec_graph, self._io_meta,
+            data_sizes, _delay=delay, _tell=True
+        )
 
     @log_unhandled
     def _on_running(self):
@@ -594,13 +551,7 @@ class OperandActor(BaseOperandActor):
             self.ref().free_data(state=OperandState.CANCELLED, _tell=True)
         elif self._last_state == OperandState.READY:
             # stop application on workers
-            cancel_futures = []
-            for w in self._assigned_workers:
-                logger.debug('Cancelling running operand %s on %s', self._op_key, w)
-                cancel_futures.append(self._get_execution_ref(address=w).dequeue_graph(
-                    self._session_id, self._op_key, _wait=False))
-            [f.result() for f in cancel_futures]
-
+            self._task_pool_ref.remove_task(self._session_id, self._op_key)
             self._assigned_workers = set()
             self.state = OperandState.CANCELLED
             self.ref().start_operand(OperandState.CANCELLED, _tell=True)

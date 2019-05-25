@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
-
-from ...actors import ActorNotExist
-from ...compat import Enum, BrokenPipeError, ConnectionRefusedError, TimeoutError  # pylint: disable=W0622
-from ...errors import WorkerDead
+from ...compat import Enum
 from ...utils import classproperty
 
 
@@ -57,19 +53,6 @@ class OperandState(Enum):
 class OperandPosition(Enum):
     INITIAL = 'initial'
     TERMINAL = 'terminal'
-
-
-@contextlib.contextmanager
-def rewrite_worker_errors(ignore_error=False):
-    rewrite = False
-    try:
-        yield
-    except (BrokenPipeError, ConnectionRefusedError, ActorNotExist, TimeoutError):
-        # we don't raise here, as we do not want
-        # the actual stack be dumped
-        rewrite = not ignore_error
-    if rewrite:
-        raise WorkerDead
 
 
 _op_cls_to_actor = dict()

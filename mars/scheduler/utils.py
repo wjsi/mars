@@ -13,11 +13,14 @@
 # limitations under the License.
 
 import array
+import contextlib
 
-from ..compat import six, Enum
+from ..actors import ActorNotExist
+from ..compat import six, Enum, BrokenPipeError, ConnectionRefusedError, TimeoutError  # pylint: disable=W0622
 from ..cluster_info import ClusterInfoActor, HasClusterInfoActor
-from ..utils import classproperty
+from ..errors import WorkerDead
 from ..promise import PromiseActor
+from ..utils import classproperty
 
 
 class GraphState(Enum):
@@ -68,3 +71,16 @@ if six.PY3:
 else:
     def array_to_bytes(typecode, initializer):
         return array.array(typecode, initializer).tostring()
+
+
+@contextlib.contextmanager
+def rewrite_worker_errors(ignore_error=False):
+    rewrite = False
+    try:
+        yield
+    except (BrokenPipeError, ConnectionRefusedError, ActorNotExist, TimeoutError):
+        # we don't raise here, as we do not want
+        # the actual stack be dumped
+        rewrite = not ignore_error
+    if rewrite:
+        raise WorkerDead

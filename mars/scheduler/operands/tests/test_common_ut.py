@@ -13,14 +13,12 @@
 # limitations under the License.
 
 import contextlib
-import time
 import unittest
 import uuid
 from collections import defaultdict
 
 from mars import promise, tensor as mt
 from mars.actors import create_actor_pool
-from mars.compat import TimeoutError
 from mars.graph import DAG
 from mars.scheduler import OperandState, ResourceActor, ChunkMetaActor,\
     ChunkMetaClient, AssignerActor, GraphActor, OperandActor
@@ -52,11 +50,7 @@ class FakeExecutionActor(promise.PromiseActor):
         except KeyError:
             pass
 
-    def enqueue_graph(self, session_id, graph_key, graph_ser, io_meta, data_sizes,
-                      priority_data=None, send_addresses=None, callback=None):
-        self.tell_promise(callback)
-
-    def start_execution(self, session_id, graph_key, send_addresses=None, callback=None):
+    def execute_graph(self, session_id, graph_key, graph_ser, io_meta, data_sizes, callback=None):
         if callback:
             self._finish_callbacks[graph_key].append(callback)
         self.ref().mock_send_all_callbacks(graph_key, _tell=True, _delay=self._exec_delay)

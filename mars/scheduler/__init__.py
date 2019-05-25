@@ -19,4 +19,5 @@ from .assigner import AssignerActor
 from .resource import ResourceActor
 from .session import SessionActor, SessionManagerActor
 from .kvstore import KVStoreActor
+from .taskpool import TaskPoolActor
 from .utils import GraphState

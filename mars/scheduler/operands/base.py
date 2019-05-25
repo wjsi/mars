@@ -17,8 +17,8 @@ import logging
 from collections import defaultdict
 
 from ...errors import WorkerDead
-from ..utils import SchedulerActor
-from .core import OperandState, rewrite_worker_errors
+from ..utils import SchedulerActor, rewrite_worker_errors
+from .core import OperandState
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,7 @@ class BaseOperandActor(SchedulerActor):
         self._graph_refs = []
         self._cluster_info_ref = None
         self._assigner_ref = None
+        self._task_pool_ref = None
         self._resource_ref = None
         self._kv_store_ref = None
 
@@ -77,11 +78,13 @@ class BaseOperandActor(SchedulerActor):
         from ..assigner import AssignerActor
         from ..kvstore import KVStoreActor
         from ..resource import ResourceActor
+        from ..taskpool import TaskPoolActor
 
         self.set_cluster_info_ref()
         self._assigner_ref = self.ctx.actor_ref(AssignerActor.default_uid())
         self._graph_refs.append(self.get_actor_ref(GraphActor.gen_uid(self._session_id, self._graph_ids[0])))
         self._resource_ref = self.get_actor_ref(ResourceActor.default_uid())
+        self._task_pool_ref = self.get_actor_ref(TaskPoolActor.gen_uid(self._session_id))
 
         self._kv_store_ref = self.ctx.actor_ref(KVStoreActor.default_uid())
         if not self.ctx.has_actor(self._kv_store_ref):
