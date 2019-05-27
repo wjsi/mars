@@ -17,7 +17,7 @@ import os
 import uuid
 
 from ..utils import log_unhandled
-from .taskpool import TaskPoolActor
+from .assigner import AssignerActor
 from .utils import SchedulerActor
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class SessionActor(SchedulerActor):
 
         self._cluster_info_ref = None
         self._manager_ref = None
-        self._task_heap_ref = None
+        self._assigner_ref = None
         self._graph_refs = dict()
         self._graph_meta_refs = dict()
         self._tileable_to_graph = dict()
@@ -59,16 +59,16 @@ class SessionActor(SchedulerActor):
         self.set_cluster_info_ref()
         self._manager_ref = self.ctx.actor_ref(SessionManagerActor.default_uid())
 
-        task_pool_uid = TaskPoolActor.gen_uid(self._session_id)
-        addr = self.get_scheduler(task_pool_uid)
-        self._task_heap_ref = self.ctx.create_actor(
-            TaskPoolActor, self._session_id, uid=task_pool_uid, address=addr)
+        assigner_uid = AssignerActor.gen_uid(self._session_id)
+        addr = self.get_scheduler(assigner_uid)
+        self._assigner_ref = self.ctx.create_actor(
+            AssignerActor, self._session_id, uid=assigner_uid, address=addr)
 
     def pre_destroy(self):
         super(SessionActor, self).pre_destroy()
         self._manager_ref.delete_session(self._session_id, _tell=True)
 
-        self.ctx.destroy_actor(self._task_heap_ref)
+        self.ctx.destroy_actor(self._assigner_ref)
         for graph_ref in self._graph_refs.values():
             self.ctx.destroy_actor(graph_ref)
 
@@ -226,6 +226,11 @@ class SessionManagerActor(SchedulerActor):
     @log_unhandled
     def broadcast_sessions(self, handler, *args, **kwargs):
         futures = []
+        for session_id in self._session_refs.keys():
+            ref = self.get_actor_ref(AssignerActor.gen_uid(session_id))
+            futures.append(ref.mark_metrics_expired(_tell=True, _wait=False))
+        [f.result() for f in futures]
+
         for ref in self._session_refs.values():
             kwargs.update(dict(_wait=False, _tell=True))
             futures.append(getattr(ref, handler)(*args, **kwargs))

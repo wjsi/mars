@@ -45,10 +45,10 @@ class TaskQueueActor(WorkerActor):
 
         self._allocator_ref = None
         self._parallel_num = parallel_num or resource.cpu_count()
-        self._min_load_num = max(1, self._parallel_num // 2)
 
         self._last_load_source = 0
         self._task_sources = []
+        self._popped_lengths = []
         self._empty_sources = []
 
     def post_create(self):
@@ -63,10 +63,12 @@ class TaskQueueActor(WorkerActor):
         if self._empty_sources:
             pos = self._empty_sources.pop(-1)
             self._task_sources[pos] = ref
+            self._popped_lengths[pos] = 0
         else:
             self._task_sources.append(ref)
+            self._popped_lengths.append(0)
 
-        self.load_tasks()
+        self.ref().load_tasks(_tell=True)
 
     def release_task(self, session_id, op_key):
         """
@@ -86,19 +88,22 @@ class TaskQueueActor(WorkerActor):
         self._allocator_ref.allocate_tasks(_tell=True)
 
     def load_tasks(self):
-        load_num = self._parallel_num + self._min_load_num \
-                   - len(self._req_heap) - len(self._allocated)
-        if not self._task_sources or load_num < self._min_load_num:
+        if not self._task_sources:
             return
 
+        load_num = self._parallel_num \
+            - max(int(0.5 + resource.cpu_percent() / 100), len(self._allocated)) \
+            - len(self._req_heap)
         n_sources = len(self._task_sources)
         start_src = cur_src = self._last_load_source
         loaded_count = 0
 
-        while True:
+        while load_num > 0:
             ref = self._task_sources[cur_src]
             if ref is not None:
-                tasks = ref.pop_worker_tasks(self.address, load_num)
+                tasks, self._popped_lengths[cur_src] = ref.pop_worker_tasks(
+                    self.address, load_num, self._popped_lengths[cur_src])
+                load_num -= len(tasks)
                 if tasks:
                     loaded_count += len(tasks)
                     req_heap = self._req_heap
@@ -188,13 +193,14 @@ class TaskQueueAllocatorActor(WorkerActor):
             allocated_count = self._queue_ref.get_allocated_count()
             if allocated_count >= self._parallel_num:
                 break
-            if allocated_count >= num_cpu / 4 and num_cpu * 100 - 50 < cpu_rate + batch_allocated:
+            if allocated_count >= num_cpu / 4 and num_cpu * 100 - 50 < cpu_rate + batch_allocated * 100:
                 break
             if self._mem_quota_ref.has_pending_requests():
                 break
 
             item = self._queue_ref.pop_next_request()
             if item is None:
+                self._queue_ref.load_tasks(_tell=True)
                 break
 
             # actually submit graph to execute
@@ -202,8 +208,8 @@ class TaskQueueAllocatorActor(WorkerActor):
             # quota request is sent
             self._execution_ref.execute_graph(*item.args, **item.kwargs)
             self._queue_ref.mark_allocated(item.key)
+            batch_allocated += 1
             self.ctx.sleep(0.001)
 
         self._last_allocate_time = time.time()
-        self._queue_ref.load_tasks(_tell=True)
         self.ref().allocate_tasks(periodical=True, _delay=_ALLOCATE_PERIOD, _tell=True)

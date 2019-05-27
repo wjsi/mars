@@ -501,14 +501,9 @@ class ExecutionActor(WorkerActor):
                     graph_record.data_sizes, _tell=True, _delay=retry_delay)
                 return
 
-            prep_promises = [
-                promise.finished()
-                .then(lambda *_: self._prepare_graph_inputs(session_id, graph_key))
-            ]
-            if quota_request:
-                prep_promises.append(self._mem_quota_ref.request_batch_quota(quota_request, _promise=True))
-
-            promise.all_(prep_promises) \
+            promise.finished() \
+                .then(lambda *_: self._prepare_graph_inputs(session_id, graph_key)) \
+                .then(lambda *_: self._mem_quota_ref.request_batch_quota(quota_request, _promise=True)) \
                 .then(_wait_free_slot) \
                 .then(lambda uid: self._send_calc_request(session_id, graph_key, uid)) \
                 .then(lambda uid, sizes: self._dump_cache(session_id, graph_key, uid, sizes)) \

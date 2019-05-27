@@ -159,7 +159,7 @@ class OperandActor(BaseOperandActor):
                 base64.b64encode(array_to_bytes('I', demand_depths)), _tell=True, _wait=False)
 
         # if the operand is already submitted to TaskPoolActor, we need to update the priority
-        self._task_pool_ref.update_task_priorities(
+        self._assigner_ref.update_operand_priority(
             self._session_id, self._op_key, self._get_priority_data(), _tell=True)
 
         futures = []
@@ -407,43 +407,47 @@ class OperandActor(BaseOperandActor):
 
         # if under retry, give application a delay
         delay = options.scheduler.retry_delay if self.retries else 0
-        # Send resource application. Submit job when worker assigned
-        try:
-            new_assignment = self._assigner_ref.get_worker_assignments(
-                self._session_id, self._info)
-        except DependencyMissing:
-            logger.warning('DependencyMissing met, operand %s will be back to UNSCHEDULED.',
-                           self._op_key)
-            self._assigned_workers = set()
-            self.ref().start_operand(OperandState.UNSCHEDULED, _tell=True)
-            return
+        if delay > 0 or self._pred_keys:
+            self.ref().submit_operand(_tell=True, _delay=delay)
+        else:
+            self._assigner_ref.submit_initial(
+                self._op_key, self._get_priority_data(), self._target_worker, _tell=True)
 
+    def submit_operand(self):
+        op_io_meta = self._io_meta = self._info['io_meta']
         try:
-            input_metas = self._io_meta['input_data_metas']
-            input_chunks = [k[0] if isinstance(k, tuple) else k for k in input_metas]
-            data_sizes = dict((k, v.chunk_size) for k, v in input_metas.items())
+            key_to_metas = op_io_meta['input_data_metas']
+            input_chunk_keys = [k[0] if isinstance(k, tuple) else k for k in key_to_metas.keys()]
+            exec_graph_future = None
         except KeyError:
-            input_chunks = self._input_chunks
-            chunk_sizes = self.chunk_meta.batch_get_chunk_size(self._session_id, input_chunks)
-            if any(v is None for v in chunk_sizes):
+            input_chunk_keys = input_data_keys = op_io_meta['input_chunks']
+            exec_graph_future = self._graph_refs[0].get_executable_operand_dag(self._op_key, _wait=False)
+
+            if input_data_keys:
+                key_to_metas = dict(zip(
+                    input_data_keys,
+                    self.chunk_meta.batch_get_chunk_meta(self._session_id, input_data_keys)
+                ))
+            else:
+                key_to_metas = dict()
+
+            if any(meta is None for meta in key_to_metas.values()):
                 logger.warning('DependencyMissing met, operand %s will be back to UNSCHEDULED.',
                                self._op_key)
                 self._assigned_workers = set()
                 self.ref().start_operand(OperandState.UNSCHEDULED, _tell=True)
                 return
-            data_sizes = dict(zip(input_chunks, chunk_sizes))
 
-        new_assignment = [a for a in new_assignment if a not in self._assigned_workers]
-        self._assigned_workers.update(new_assignment)
-        logger.debug('Operand %s assigned to run on workers %r, now it has %r',
-                     self._op_key, new_assignment, self._assigned_workers)
+        if exec_graph_future is None:
+            exec_graph = self._graph_refs[0].get_executable_operand_dag(
+                self._op_key, input_chunk_keys)
+        else:
+            exec_graph = exec_graph_future.result()
 
-        serialized_exec_graph = self._graph_refs[0].get_executable_operand_dag(self._op_key, input_chunks)
-        self._task_pool_ref.submit_task(
-            self._session_id, self._op_key, self._get_priority_data(), new_assignment,
-            self._session_id, self._op_key, serialized_exec_graph, self._io_meta,
-            data_sizes, _delay=delay, _tell=True
-        )
+        self._assigned_workers = set(self._assigner_ref.submit_operand(
+            self._op_key, exec_graph, self._info['io_meta'], self._get_priority_data(),
+            key_to_metas, self._target_worker
+        ))
 
     @log_unhandled
     def _on_running(self):
@@ -551,7 +555,7 @@ class OperandActor(BaseOperandActor):
             self.ref().free_data(state=OperandState.CANCELLED, _tell=True)
         elif self._last_state == OperandState.READY:
             # stop application on workers
-            self._task_pool_ref.remove_task(self._session_id, self._op_key)
+            self._assigner_ref.remove_task(self._session_id, self._op_key)
             self._assigned_workers = set()
             self.state = OperandState.CANCELLED
             self.ref().start_operand(OperandState.CANCELLED, _tell=True)

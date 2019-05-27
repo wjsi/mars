@@ -152,19 +152,11 @@ class ResourceActor(SchedulerActor):
             self._broadcast_workers(ExecutionActor.handle_worker_change, [worker], [])
 
     def _broadcast_sessions(self, handler, *args, **kwargs):
-        from .assigner import AssignerActor
-
         if not options.scheduler.enable_failover:  # pragma: no cover
             return
 
         if hasattr(handler, '__name__'):
             handler = handler.__name__
-
-        futures = []
-        for ep in self.get_schedulers():
-            ref = self.ctx.actor_ref(AssignerActor.default_uid(), address=ep)
-            futures.append(ref.mark_metrics_expired(_tell=True, _wait=False))
-        [f.result() for f in futures]
 
         futures = []
         kwargs.update(dict(_tell=True, _wait=False))
