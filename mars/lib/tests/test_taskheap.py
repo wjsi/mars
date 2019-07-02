@@ -15,7 +15,7 @@
 import queue
 import unittest
 
-from mars.scheduler.taskheap import TaskHeap
+from mars.lib.taskheap import TaskHeapGroups
 
 
 class Test(unittest.TestCase):
@@ -39,8 +39,8 @@ class Test(unittest.TestCase):
                 self.assertEqual(edump.store_item.qids[edump.position_idx], qid)
                 self.assertEqual(edump.store_item.positions[edump.position_idx], idx)
 
-    def testTaskHeap(self):
-        taskheap = TaskHeap()
+    def testTaskHeapGroups(self):
+        taskheap = TaskHeapGroups()
         taskheap.add_group('g1')
         taskheap.add_group('g2')
         self.assertEqual(len(taskheap.dump().queues), 2)
@@ -85,8 +85,6 @@ class Test(unittest.TestCase):
         self.assertEqual(len(dump.store_items), 6)
         self.assertEqual(len(dump.queues[0]), 4)
         self.assertEqual(len(dump.queues[1]), 4)
-
-        self.assertIsNone(taskheap.pop_group_task('g2', 10))
 
         # now that
         # g1 has 1, 7, 3, 5

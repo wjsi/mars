@@ -21,7 +21,7 @@ from collections import defaultdict
 
 from ..errors import WorkerDead
 from ..utils import log_unhandled
-from .taskheap import TaskHeap
+from ..lib.taskheap import TaskHeapGroups
 from .utils import SchedulerActor, rewrite_worker_errors
 
 logger = logging.getLogger(__name__)
@@ -41,8 +41,8 @@ class AssignerActor(SchedulerActor):
         # only when it is out of date
         self._worker_metric_time = 0
 
-        self._initial_heap = TaskHeap()
-        self._task_heap = TaskHeap()
+        self._initial_heap = TaskHeapGroups()
+        self._task_heap = TaskHeapGroups()
 
         self._resource_ref = None
         self._cluster_info_ref = None

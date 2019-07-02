@@ -16,7 +16,9 @@
 from collections import namedtuple
 from queue import Empty
 
+cimport cython
 from libcpp.vector cimport vector
+from cpython.object cimport Py_LT, Py_GT, PyObject_RichCompareBool
 
 cdef Py_ssize_t _INVALID_GROUP_POS = 0x8fffffff
 
@@ -78,10 +80,20 @@ cdef class TaskHeapItem:
         return _D_TaskHeapItem(self.store_item.dump(), self.position_idx)
 
 
-cdef class TaskHeap:
+cdef class GroupDefItem:
+    cdef object key
+    cdef bint max_heap
+
+    def __init__(self, object key, bint max_heap=True):
+        self.key = key
+        self.max_heap = max_heap
+
+
+cdef class TaskHeapGroups:
     """
     Heaps to record tasks for operands in groups.
     """
+    cdef list _group_defs
     cdef list _queues
     cdef list _free_queues
     # mapping from groups to queue indices
@@ -91,6 +103,7 @@ cdef class TaskHeap:
     cdef dict _store_items
 
     def __init__(self):
+        self._group_defs = list()
         self._queues = list()
         self._free_queues = list()
         self._group_to_queues = dict()
@@ -109,20 +122,23 @@ cdef class TaskHeap:
     def __getitem__(self, item):
         return self._store_items[item]
 
-    cpdef void add_group(self, object group_key):
+    cpdef void add_group(self, object group_key, bint max_heap=True):
         cdef Py_ssize_t free_idx = 0
         cdef Py_ssize_t queue_idx = 0
         cdef Py_ssize_t n_free_queues = len(self._free_queues)
+        cdef GroupDefItem group_def = GroupDefItem(group_key, max_heap)
 
         if free_idx < n_free_queues:
             # vacant position available, put directly
             queue_idx = self._free_queues[free_idx]
             self._queues[queue_idx] = []
+            self._group_defs[queue_idx] = group_def
             free_idx += 1
         else:
             # create new position
             queue_idx = len(self._queues)
             self._queues.append([])
+            self._group_defs.append(group_def)
 
         self._group_to_queues[group_key] = queue_idx
         if free_idx > 0:
@@ -144,6 +160,7 @@ cdef class TaskHeap:
         del group_queue[:]
         self._free_queues.append(qid)
         del self._group_to_queues[group_key]
+        self._group_defs[qid] = None
 
     def add_task(self, object key, object priority, list group_keys, *args, **kwargs):
         cdef TaskStoreItem store_item
@@ -199,7 +216,7 @@ cdef class TaskHeap:
 
         del self._store_items[store_item.key]
 
-    cpdef object pop_group_task(self, object group_key, object priority_bound=None):
+    cpdef object pop_group_task(self, object group_key):
         cdef list queue = self._queues[self._group_to_queues[group_key]]
 
         if len(queue) == 0:
@@ -207,9 +224,6 @@ cdef class TaskHeap:
 
         cdef TaskHeapItem hitem = queue[0]
         cdef TaskStoreItem store_item = hitem.store_item
-        if priority_bound is not None and store_item.priority <= priority_bound:
-            return None
-
         self.remove_task(store_item.key)
         return store_item
 
@@ -229,16 +243,27 @@ cdef class TaskHeap:
             self._sift_up(qid, pos)
             self._sift_down(qid, pos)
 
+    @staticmethod
+    @cython.nonecheck(False)
+    cdef inline int _compare_heap_items(TaskHeapItem o1, TaskHeapItem o2, int op_cmp) except -1:
+        cdef int cmp_result = PyObject_RichCompareBool(
+            o1.store_item.priority, o2.store_item.priority, op_cmp)
+        if cmp_result < 0:
+            raise TypeError('Cannot compare %r with %r with op %d' % (o1, o2, op_cmp))
+        return cmp_result
+
     cdef void _sift_up(self, Py_ssize_t qid, Py_ssize_t pos) except *:
         cdef TaskHeapItem cur_item, par_item
+        cdef GroupDefItem group_def = self._group_defs[qid]
         cdef list queue = self._queues[qid]
         cdef Py_ssize_t ppos = (pos - 1) >> 1
+        cdef int op_cmp = Py_GT if group_def.max_heap else Py_LT
 
         cur_item = queue[pos]
 
         while pos > 0:
             par_item = queue[ppos]
-            if cur_item.store_item.priority > par_item.store_item.priority:
+            if TaskHeapGroups._compare_heap_items(cur_item, par_item, op_cmp):
                 # move smaller parent into current pos and update position record
                 queue[pos] = par_item
                 par_item.store_item.positions[par_item.position_idx] = pos
@@ -256,10 +281,12 @@ cdef class TaskHeap:
 
     cdef void _sift_down(self, Py_ssize_t qid, Py_ssize_t pos) except *:
         cdef TaskHeapItem cur_item, child_item, child_right_item, par_item
+        cdef GroupDefItem group_def = self._group_defs[qid]
         cdef list queue = self._queues[qid]
         cdef Py_ssize_t cpos = (pos << 1) + 1, maxpos = len(queue)
         # the first leaf node
         cdef Py_ssize_t limit = maxpos >> 1
+        cdef int op_cmp = Py_LT if group_def.max_heap else Py_GT
 
         cur_item = queue[pos]
 
@@ -268,11 +295,11 @@ cdef class TaskHeap:
             if cpos + 1 < maxpos:
                 # if the right sibling has higher priority, use it
                 child_right_item = queue[cpos + 1]
-                if child_item.store_item.priority < child_right_item.store_item.priority:
+                if TaskHeapGroups._compare_heap_items(child_item, child_right_item, op_cmp):
                     child_item = child_right_item
                     cpos += 1
 
-            if cur_item.store_item.priority < child_item.store_item.priority:
+            if TaskHeapGroups._compare_heap_items(cur_item, child_item, op_cmp):
                 # move maximal child to parent
                 queue[pos] = child_item
                 child_item.store_item.positions[child_item.position_idx] = pos
@@ -289,4 +316,4 @@ cdef class TaskHeap:
         cur_item.store_item.positions[cur_item.position_idx] = pos
 
 
-__all__ = ['TaskHeap', 'TaskStoreItem', 'Empty']
+__all__ = ['TaskHeapGroups', 'TaskStoreItem', 'Empty']
