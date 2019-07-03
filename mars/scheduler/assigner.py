@@ -143,6 +143,11 @@ class AssignerActor(SchedulerActor):
         except KeyError:
             pass
 
+    def put_back_tasks(self, task_items):
+        for task_item in task_items:
+            task_item.groups = [w for w in task_item.groups if w in self._worker_metrics]
+            self._task_heap.add_task_item(task_item)
+
     def pop_worker_initial(self, worker):
         try:
             return self._initial_heap.pop_group_task(worker)

@@ -62,6 +62,7 @@ class Test(unittest.TestCase):
         self._assert_queues_consistent(taskheap)
         taskheap.add_task('4', 4, ['g2'])
         self._assert_queues_consistent(taskheap)
+        self.assertEqual(len(taskheap), 7)
 
         # now that
         # g1 has 1, 2, 7, 3, 5
@@ -85,6 +86,7 @@ class Test(unittest.TestCase):
         self.assertEqual(len(dump.store_items), 6)
         self.assertEqual(len(dump.queues[0]), 4)
         self.assertEqual(len(dump.queues[1]), 4)
+        self.assertEqual(len(taskheap), 6)
 
         # now that
         # g1 has 1, 7, 3, 5
@@ -96,6 +98,7 @@ class Test(unittest.TestCase):
         dump = taskheap.dump()
         self.assertEqual(len(dump.store_items), 5)
         self.assertEqual(item.key, '7')
+        self.assertEqual(len(taskheap), 5)
 
         # now that
         # g1 has 1, 3, 5
@@ -107,6 +110,7 @@ class Test(unittest.TestCase):
         dump = taskheap.dump()
         self.assertEqual(len(dump.group_to_queues), 1)
         self.assertEqual(len(dump.store_items), 3)
+        self.assertEqual(len(taskheap), 3)
 
         # now that
         # g1 has 1, 3, 5
@@ -123,6 +127,7 @@ class Test(unittest.TestCase):
         dump = taskheap.dump()
         self.assertEqual(len(dump.group_to_queues), 2)
         self.assertEqual(len(dump.queues), 2)
+        self.assertEqual(len(taskheap), 2)
 
         # now that
         # g1 has 1, 5

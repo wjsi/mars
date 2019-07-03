@@ -23,7 +23,7 @@ from cpython.object cimport Py_LT, Py_GT, PyObject_RichCompareBool
 cdef Py_ssize_t _INVALID_GROUP_POS = 0x8fffffff
 
 
-_D_TaskStoreItem = namedtuple('_D_TaskStoreItem', 'positions qids key priority args kwargs')
+_D_TaskStoreItem = namedtuple('_D_TaskStoreItem', 'positions qids key priority groups args kwargs')
 _D_TaskHeapItem = namedtuple('_D_TaskHeapItem', 'store_item position_idx')
 _D_TaskHeap = namedtuple('_D_TaskHeapItem', 'queues free_queues group_to_queues store_items')
 
@@ -39,12 +39,14 @@ cdef class TaskStoreItem:
 
     cpdef public object key
     cpdef public object priority
+    cpdef public object groups
     cpdef public object args
     cpdef public object kwargs
 
-    def __init__(self, object key, object priority, object args, object kwargs):
+    def __init__(self, object key, object priority, object groups, object args, object kwargs):
         self.key = key
         self.priority = priority
+        self.groups = groups
         self.args = args
         self.kwargs = kwargs
 
@@ -53,11 +55,11 @@ cdef class TaskStoreItem:
 
     def dump(self):
         return _D_TaskStoreItem(
-            list(self.positions), list(self.qids), self.key, self.priority, self.args, self.kwargs
+            list(self.positions), list(self.qids), self.key, self.priority, self.groups, self.args, self.kwargs
         )
 
     def __reduce__(self):
-        return TaskStoreItem, (self.key, self.priority, self.args, self.kwargs)
+        return TaskStoreItem, (self.key, self.priority, self.groups, self.args, self.kwargs)
 
 
 cdef class TaskHeapItem:
@@ -163,22 +165,25 @@ cdef class TaskHeapGroups:
         self._group_defs[qid] = None
 
     def add_task(self, object key, object priority, list group_keys, *args, **kwargs):
-        cdef TaskStoreItem store_item
+        cdef TaskStoreItem store_item = TaskStoreItem(key, priority, group_keys, args, kwargs)
+        self.add_task_item(store_item)
+
+    def add_task_item(self, TaskStoreItem store_item):
         cdef Py_ssize_t qid, pos, i, j, free_id
-        cdef Py_ssize_t group_num = len(group_keys)
+        cdef Py_ssize_t group_num = len(store_item.groups)
         cdef list group_queue
 
         try:
             # delete first in case the key already exists
-            self.remove_task(key)
+            self.remove_task(store_item.key)
         except KeyError:
             pass
 
-        store_item = self._store_items[key] = TaskStoreItem(key, priority, args, kwargs)
+        self._store_items[store_item.key] = store_item
         store_item.positions.reserve(group_num)
         store_item.qids.reserve(group_num)
 
-        for i, w in enumerate(group_keys):
+        for i, w in enumerate(store_item.groups):
             qid = self._group_to_queues[w]
             group_queue = self._queues[qid]
             pos = len(group_queue)

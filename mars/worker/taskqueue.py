@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import heapq
 import itertools
 import logging
 import time
+from collections import defaultdict
 
 from .status import StatusActor
 from .utils import WorkerActor, ExecutionState
 from .. import resource
+from ..scheduler.assigner import AssignerActor
 from ..scheduler.graph import ExecutableInfo
+from ..lib.taskheap import TaskHeapGroups, Empty
 from ..utils import log_unhandled
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,11 @@ class TaskQueueActor(WorkerActor):
     def __init__(self, parallel_num=None):
         super(TaskQueueActor, self).__init__()
         self._allocated = set()
-        self._req_heap = []
+        self._req_heap = TaskHeapGroups()
+        self._req_heap.add_group(0, False)
+        self._req_heap.add_group(1, True)
+
+        self._workers_cache = dict()
 
         self._status_ref = None
         self._allocator_ref = None
@@ -57,6 +63,7 @@ class TaskQueueActor(WorkerActor):
 
     def post_create(self):
         super(TaskQueueActor, self).post_create()
+        self.set_cluster_info_ref()
 
         self._status_ref = self.ctx.actor_ref(StatusActor.default_uid())
         self._allocator_ref = self.ctx.create_actor(
@@ -74,6 +81,7 @@ class TaskQueueActor(WorkerActor):
             self._popped_lengths.append(0)
 
         self.ref().load_tasks(_tell=True)
+        self.ref().put_overload_back(_tell=True)
 
     def release_task(self, session_id, op_key):
         """
@@ -92,6 +100,12 @@ class TaskQueueActor(WorkerActor):
         self._allocator_ref.enable_quota(_tell=True)
         self._allocator_ref.allocate_tasks(_tell=True)
 
+    def _get_num_to_load(self):
+        load_num = self._parallel_num \
+                   - max(int(0.5 + resource.cpu_percent() / 100), len(self._allocated)) \
+                   - len(self._req_heap)
+        return max(0, load_num)
+
     def _update_item_state(self, item):
         session_id, op_key = item.key
 
@@ -106,6 +120,26 @@ class TaskQueueActor(WorkerActor):
                     _tell=True, _wait=False
                 )
 
+    def put_overload_back(self):
+        cur_vacant = self._parallel_num \
+                     - max(int(resource.cpu_percent() / 100), len(self._allocated))
+        put_back_num = len(self._req_heap) - cur_vacant - 1
+        session_items = defaultdict(list)
+        for _ in range(put_back_num):
+            try:
+                item = self._req_heap.pop_group_task(0)
+                self._status_ref.remove_progress(*item.key, **dict(_tell=True, _wait=False))
+            except Empty:
+                break
+            item.groups = self._workers_cache.pop(item.key)
+            session_items[item.key[0]].append(item)
+
+        for session_id, items in session_items.items():
+            assigner_ref = self.get_actor_ref(AssignerActor.gen_uid(session_id))
+            assigner_ref.put_back_tasks(items, _tell=True)
+
+        self.ref().put_overload_back(_tell=True, _delay=5)
+
     def load_tasks_from_assigner(self, assigner_ref, load_num, popped_len=0):
         assigner_ref = self.ctx.actor_ref(assigner_ref)
         tasks, popped_len = assigner_ref.pop_worker_tasks(
@@ -113,8 +147,8 @@ class TaskQueueActor(WorkerActor):
         if tasks:
             req_heap = self._req_heap
             for task in tasks:
-                heapq.heappush(
-                    req_heap, (ReverseWrapper((task.priority, id(task))), task))
+                self._workers_cache[task.key] = task.groups
+                req_heap.add_task(task.key, task.priority, [0, 1], *task.args, **task.kwargs)
                 self._update_item_state(task)
         return tasks, popped_len
 
@@ -168,9 +202,13 @@ class TaskQueueActor(WorkerActor):
         """
         item = None
         if self._req_heap:
-            item = heapq.heappop(self._req_heap)
-            self._status_ref.remove_progress(*item[1].key)
-        return item[-1] if item is not None else None
+            try:
+                item = self._req_heap.pop_group_task(1)
+            except Empty:
+                return None
+            self._workers_cache.pop(item.key, None)
+            self._status_ref.remove_progress(*item.key, **dict(_tell=True, _wait=False))
+        return item
 
 
 class TaskQueueAllocatorActor(WorkerActor):
