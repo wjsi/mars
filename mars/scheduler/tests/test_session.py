@@ -18,7 +18,7 @@ import uuid
 
 from mars.actors import create_actor_pool, FunctionActor
 from mars.config import options
-from mars.scheduler import AssignerActor, ChunkMetaActor, ChunkMetaClient, \
+from mars.scheduler import ChunkMetaActor, ChunkMetaClient, \
     GraphActor, ResourceActor, SessionManagerActor
 from mars.scheduler.utils import SchedulerClusterInfoActor
 from mars.tests.core import mock
@@ -33,7 +33,7 @@ class MockGraphActor(FunctionActor):
     def gen_uid(session_id, graph_key):
         return GraphActor.gen_uid(session_id, graph_key)
 
-    def execute_graph(self):
+    def execute_graph(self, compose=False):
         pass
 
     def handle_worker_change(self, *args):
@@ -60,7 +60,6 @@ class Test(unittest.TestCase):
         with create_actor_pool(n_process=1, backend='gevent', address=addr) as pool:
             cluster_info_ref = pool.create_actor(SchedulerClusterInfoActor, [pool.cluster_info.address],
                                                  uid=SchedulerClusterInfoActor.default_uid())
-            pool.create_actor(AssignerActor, uid=AssignerActor.default_uid())
             session_manager_ref = pool.create_actor(
                 SessionManagerActor, uid=SessionManagerActor.default_uid())
             resource_ref = pool.create_actor(ResourceActor, uid=ResourceActor.default_uid())

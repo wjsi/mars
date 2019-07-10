@@ -62,8 +62,11 @@ class AssignerActor(SchedulerActor):
         from .resource import ResourceActor
         self._resource_ref = self.get_actor_ref(ResourceActor.default_uid())
 
-        service_uid = self.ctx.distributor.make_same_process(
-            's:h1:assign_service$%s' % self._session_id, self.uid)
+        try:
+            service_uid = self.ctx.distributor.make_same_process(
+                's:h1:assign_service$%s' % self._session_id, self.uid)
+        except AttributeError:
+            service_uid = 's:h1:assign_service$%s' % self._session_id
         self._assigner_service_ref = self.ctx.create_actor(
             AssignerServiceActor, self.ref(), uid=service_uid)
 
@@ -73,14 +76,14 @@ class AssignerActor(SchedulerActor):
     def _refresh_worker_metrics(self):
         def _adjust_heap_size(heap):
             workers = set(self._worker_metrics.keys())
-            heap_workers = set(heap.workers)
+            heap_workers = set(heap.groups)
             removed = heap_workers - workers
             for w in removed:
-                heap.remove_worker(w)
+                heap.remove_group(w)
             self._notified_workers.difference_update(removed)
 
             for w in workers - heap_workers:
-                heap.add_worker(w)
+                heap.add_group(w)
 
         t = time.time()
         if self._worker_metrics is None or self._worker_metric_time + 1 < t:
@@ -150,13 +153,13 @@ class AssignerActor(SchedulerActor):
 
     def pop_worker_initial(self, worker):
         try:
-            return self._initial_heap.pop_worker_task(worker)
+            return self._initial_heap.pop_group_task(worker)
         except queue.Empty:
             return None
 
     def pop_worker_task(self, worker):
         try:
-            return self._task_heap.pop_worker_task(worker)
+            return self._task_heap.pop_group_task(worker)
         except queue.Empty:
             return None
 

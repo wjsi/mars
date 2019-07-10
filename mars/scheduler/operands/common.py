@@ -418,10 +418,10 @@ class OperandActor(BaseOperandActor):
         try:
             key_to_metas = op_io_meta['input_data_metas']
             input_chunk_keys = [k[0] if isinstance(k, tuple) else k for k in key_to_metas.keys()]
-            exec_graph_future = None
+            exec_dag = None
         except KeyError:
             input_chunk_keys = input_data_keys = op_io_meta['input_chunks']
-            exec_graph_future = self._graph_refs[0].get_executable_operand_dag(self._op_key, _wait=False)
+            exec_dag = self._executable_dag
 
             if input_data_keys:
                 key_to_metas = dict(zip(
@@ -438,14 +438,12 @@ class OperandActor(BaseOperandActor):
                 self.ref().start_operand(OperandState.UNSCHEDULED, _tell=True)
                 return
 
-        if exec_graph_future is None:
-            exec_graph = self._graph_refs[0].get_executable_operand_dag(
+        if exec_dag is None:
+            exec_dag = self._graph_refs[0].get_executable_operand_dag(
                 self._op_key, input_chunk_keys)
-        else:
-            exec_graph = exec_graph_future.result()
 
         self._assigned_workers = set(self._assigner_ref.submit_operand(
-            self._op_key, exec_graph, self._info['io_meta'], self._get_priority_data(),
+            self._op_key, exec_dag, self._info['io_meta'], self._get_priority_data(),
             key_to_metas, self._target_worker
         ))
 

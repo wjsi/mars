@@ -27,6 +27,7 @@ class Test(unittest.TestCase):
 
     def testAssignerActor(self):
         mock_scheduler_addr = '127.0.0.1:%d' % get_next_port()
+        session_id = str(uuid.uuid4())
         with create_actor_pool(n_process=1, backend='gevent', address=mock_scheduler_addr) as pool:
             cluster_info_ref = pool.create_actor(SchedulerClusterInfoActor, [pool.cluster_info.address],
                                                  uid=SchedulerClusterInfoActor.default_uid())
@@ -44,9 +45,9 @@ class Test(unittest.TestCase):
             g = gevent.spawn(write_mock_meta)
             g.join()
 
-            assigner_ref = pool.create_actor(AssignerActor, uid=AssignerActor.default_uid())
+            assigner_ref = pool.create_actor(AssignerActor, session_id,
+                                             uid=AssignerActor.gen_uid(session_id))
 
-            session_id = str(uuid.uuid4())
             chunk_key1 = str(uuid.uuid4())
             chunk_key2 = str(uuid.uuid4())
             chunk_key3 = str(uuid.uuid4())
