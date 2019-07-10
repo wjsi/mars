@@ -46,7 +46,7 @@ class BaseOperandActor(SchedulerActor):
         self._pred_keys = set(io_meta['predecessors'])
         self._succ_keys = set(io_meta['successors'])
 
-        self._executable_dag = op_info.pop('executable_dag', None)
+        self._executable_info = op_info.pop('executable_info', None)
 
         # set of finished predecessors, used to decide whether we should move the operand to ready
         self._finish_preds = set()
@@ -69,17 +69,25 @@ class BaseOperandActor(SchedulerActor):
         self._graph_refs = []
         self._cluster_info_ref = None
         self._assigner_ref = None
+        self._assigner_service_ref = None
         self._resource_ref = None
         self._kv_store_ref = None
 
     def post_create(self):
         from ..graph import GraphActor
-        from ..assigner import AssignerActor
+        from ..assigner import AssignerActor, AssignerServiceActor
         from ..kvstore import KVStoreActor
         from ..resource import ResourceActor
 
         self.set_cluster_info_ref()
-        self._assigner_ref = self.get_actor_ref(AssignerActor.gen_uid(self._session_id))
+
+        assigner_uid = AssignerActor.gen_uid(self._session_id)
+        assigner_addr = self.get_scheduler(assigner_uid)
+        self._assigner_ref = self.ctx.actor_ref(assigner_uid, address=assigner_addr)
+        self._assigner_service_ref = self.ctx.actor_ref(
+            AssignerServiceActor.gen_uid(self._session_id), address=assigner_addr
+        )
+
         self._graph_refs.append(self.get_actor_ref(GraphActor.gen_uid(self._session_id, self._graph_ids[0])))
         self._resource_ref = self.get_actor_ref(ResourceActor.default_uid())
 

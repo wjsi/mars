@@ -112,6 +112,9 @@ class ShuffleProxyActor(BaseOperandActor):
 
         self.ref().start_operand(OperandState.FREED, _tell=True)
 
+    def submit_operand(self):
+        return None
+
     def update_demand_depths(self, depth):
         pass
 

@@ -13,11 +13,14 @@
 # limitations under the License.
 
 import heapq
+import itertools
 import logging
 import time
 
-from .utils import WorkerActor
+from .status import StatusActor
+from .utils import WorkerActor, ExecutionState
 from .. import resource
+from ..scheduler.graph import ExecutableInfo
 from ..utils import log_unhandled
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,7 @@ class TaskQueueActor(WorkerActor):
         self._allocated = set()
         self._req_heap = []
 
+        self._status_ref = None
         self._allocator_ref = None
         self._parallel_num = parallel_num or resource.cpu_count()
 
@@ -54,6 +58,7 @@ class TaskQueueActor(WorkerActor):
     def post_create(self):
         super(TaskQueueActor, self).post_create()
 
+        self._status_ref = self.ctx.actor_ref(StatusActor.default_uid())
         self._allocator_ref = self.ctx.create_actor(
             TaskQueueAllocatorActor, self.ref(), self._parallel_num,
             uid=TaskQueueAllocatorActor.default_uid())
@@ -87,6 +92,32 @@ class TaskQueueActor(WorkerActor):
         self._allocator_ref.enable_quota(_tell=True)
         self._allocator_ref.allocate_tasks(_tell=True)
 
+    def _update_item_state(self, item):
+        session_id, op_key = item.key
+
+        args_iter = itertools.chain(item.args, item.kwargs.values())
+        exec_info = next((arg for arg in args_iter if isinstance(arg, ExecutableInfo)), None)
+
+        logger.debug('Operand %s switched to %s', op_key, ExecutionState.ENQUEUED.name)
+        if exec_info and exec_info.op_name:
+            if self._status_ref:
+                self._status_ref.update_progress(
+                    session_id, op_key, exec_info.op_name, ExecutionState.ENQUEUED.name,
+                    _tell=True, _wait=False
+                )
+
+    def load_tasks_from_assigner(self, assigner_ref, load_num, popped_len=0):
+        assigner_ref = self.ctx.actor_ref(assigner_ref)
+        tasks, popped_len = assigner_ref.pop_worker_tasks(
+            self.address, load_num, popped_len)
+        if tasks:
+            req_heap = self._req_heap
+            for task in tasks:
+                heapq.heappush(
+                    req_heap, (ReverseWrapper((task.priority, id(task))), task))
+                self._update_item_state(task)
+        return tasks, popped_len
+
     def load_tasks(self):
         if not self._task_sources:
             return
@@ -101,15 +132,11 @@ class TaskQueueActor(WorkerActor):
         while load_num > 0:
             ref = self._task_sources[cur_src]
             if ref is not None:
-                tasks, self._popped_lengths[cur_src] = ref.pop_worker_tasks(
-                    self.address, load_num, self._popped_lengths[cur_src])
+                tasks, self._popped_lengths[cur_src] = self.load_tasks_from_assigner(
+                    ref, load_num, self._popped_lengths[cur_src])
                 load_num -= len(tasks)
                 if tasks:
                     loaded_count += len(tasks)
-                    req_heap = self._req_heap
-                    for task in tasks:
-                        heapq.heappush(
-                            req_heap, (ReverseWrapper((task.priority, id(task))), task))
                 else:
                     self._task_sources[cur_src] = None
                     self._empty_sources.append(cur_src)
@@ -142,6 +169,7 @@ class TaskQueueActor(WorkerActor):
         item = None
         if self._req_heap:
             item = heapq.heappop(self._req_heap)
+            self._status_ref.remove_progress(*item[1].key)
         return item[-1] if item is not None else None
 
 

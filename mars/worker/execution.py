@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import itertools
 import logging
 import random
 import sys
@@ -21,7 +22,7 @@ from collections import defaultdict
 
 from .. import promise
 from ..actors import ActorNotExist
-from ..compat import reduce, six, Enum, BrokenPipeError, \
+from ..compat import reduce, six, BrokenPipeError, \
     ConnectionRefusedError, TimeoutError  # pylint: disable=W0622
 from ..config import options
 from ..errors import PinChunkFailed, WorkerProcessStopped, WorkerDead, \
@@ -31,36 +32,32 @@ from ..operands import Fetch, FetchShuffle
 from ..utils import deserialize_graph, log_unhandled, build_exc_info, calc_data_size, BlacklistSet
 from .chunkholder import ensure_chunk
 from .spill import spill_exists, get_spill_data_size
-from .utils import WorkerActor, ExpiringCache, concat_operand_keys, build_load_key
+from .utils import WorkerActor, ExpiringCache, ExecutionState, concat_operand_keys, \
+    build_load_key
 
 logger = logging.getLogger(__name__)
-
-
-class ExecutionState(Enum):
-    ALLOCATING = 'allocating'
-    PREPARING_INPUTS = 'preparing_inputs'
-    CALCULATING = 'calculating'
-    STORING = 'storing'
 
 
 class GraphExecutionRecord(object):
     """
     Execution records of the graph
     """
-    __slots__ = ('graph', 'graph_serialized', '_state', 'op_string', 'data_targets',
-                 'chunk_targets', 'io_meta', 'data_sizes', 'shared_input_chunks',
-                 'state_time', 'mem_request', 'pin_request', 'est_finish_time',
-                 'calc_actor_uid', 'send_addresses', 'retry_delay',
-                 'finish_callbacks', 'stop_requested')
+    __slots__ = ('executable_info', 'graph', 'graph_serialized', '_state', 'op_string',
+                 'data_targets', 'chunk_targets', 'io_meta', 'data_sizes',
+                 'shared_input_chunks', 'state_time', 'mem_request', 'pin_request',
+                 'est_finish_time', 'calc_actor_uid', 'send_addresses', 'retry_delay',
+                 'succ_to_preds', 'finish_callbacks', 'stop_requested')
 
-    def __init__(self, graph_serialized, state, chunk_targets=None, data_targets=None,
+    def __init__(self, executable_info, state, chunk_targets=None, data_targets=None,
                  io_meta=None, data_sizes=None, mem_request=None,
                  shared_input_chunks=None, pin_request=None, est_finish_time=None,
                  calc_actor_uid=None, send_addresses=None, retry_delay=None,
                  finish_callbacks=None, stop_requested=False):
 
-        self.graph_serialized = graph_serialized
-        graph = self.graph = deserialize_graph(graph_serialized)
+        self.executable_info = executable_info
+        self.graph_serialized = executable_info.dag
+        self.succ_to_preds = executable_info.succ_to_preds
+        graph = self.graph = deserialize_graph(self.graph_serialized)
 
         self._state = state
         self.state_time = time.time()
@@ -177,6 +174,42 @@ class ExecutionActor(WorkerActor):
             if self._graph_records:
                 self._dump_execution_states()
         self.ref().periodical_dump(_tell=True, _delay=10)
+
+    def _notify_successors(self, session_id, graph_key):
+        from ..scheduler.operands.base import BaseOperandActor
+
+        graph_record = self._graph_records[(session_id, graph_key)]
+        succ_to_preds = graph_record.succ_to_preds
+        if not succ_to_preds:
+            return
+
+        result_cache = self._result_cache
+        enqueue_futures = []
+        for succ_key, preds in succ_to_preds.items():
+            succ_ready = True
+            for pred_key in preds:
+                try:
+                    if not result_cache[(session_id, pred_key)].succeeded:
+                        succ_ready = False
+                        break
+                except KeyError:
+                    succ_ready = False
+                    break
+            if not succ_ready:
+                continue
+
+            logger.debug('Inserting higher priority node %s into queue', succ_key)
+            succ_op_ref = self.get_actor_ref(BaseOperandActor.gen_uid(session_id, succ_key))
+            enqueue_futures.append(
+                succ_op_ref.submit_operand(_wait=False)
+            )
+
+        assigner_refs = sorted(((r.uid, r.address) for r in (f.result() for f in enqueue_futures)
+                                if r is not None))
+        for ref, group in itertools.groupby(assigner_refs):
+            load_num = len(list(group))
+            ref = self.ctx.actor_ref(ref[0], address=ref[1])
+            self._task_queue_ref.load_tasks_from_assigner(ref, load_num)
 
     def _estimate_calc_memory(self, session_id, graph_key):
         graph_record = self._graph_records[(session_id, graph_key)]
@@ -401,12 +434,12 @@ class ExecutionActor(WorkerActor):
                                              _tell=True, _wait=False)
 
     @log_unhandled
-    def execute_graph(self, session_id, graph_key, graph_ser, io_meta, data_sizes, callback=None):
+    def execute_graph(self, session_id, graph_key, executable_info, io_meta, data_sizes, callback=None):
         """
         Submit graph to the worker and control the execution
         :param session_id: session id
         :param graph_key: graph key
-        :param graph_ser: serialized executable graph
+        :param executable_info: serialized executable graph
         :param io_meta: io meta of the chunk
         :param data_sizes: data size of each input chunk, as a dict
         :param callback: promise callback
@@ -426,7 +459,7 @@ class ExecutionActor(WorkerActor):
             old_callbacks = []
 
         graph_record = self._graph_records[session_graph_key] = GraphExecutionRecord(
-            graph_ser, ExecutionState.ALLOCATING,
+            executable_info, ExecutionState.ALLOCATING,
             io_meta=io_meta,
             data_sizes=data_sizes,
             chunk_targets=io_meta['chunks'],
@@ -497,7 +530,7 @@ class ExecutionActor(WorkerActor):
                 retry_delay = graph_record.retry_delay + 0.5 + random.random()
                 graph_record.retry_delay = min(1 + graph_record.retry_delay, 30)
                 self.ref().execute_graph(
-                    session_id, graph_key, graph_record.graph_serialized, graph_record.io_meta,
+                    session_id, graph_key, graph_record.executable_info, graph_record.io_meta,
                     graph_record.data_sizes, _tell=True, _delay=retry_delay)
                 return
 

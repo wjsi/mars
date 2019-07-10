@@ -28,8 +28,13 @@ from mars.config import options
 from mars.promise import PromiseActor
 from mars.utils import get_next_port, serialize_graph
 from mars.scheduler import ResourceActor, ChunkMetaActor
+from mars.scheduler.graph import ExecutableInfo
 from mars.scheduler.utils import SchedulerClusterInfoActor
 from mars.worker import DispatchActor, WorkerDaemonActor
+
+
+def _make_executable_info(graph):
+    return ExecutableInfo(dag=serialize_graph(graph), op_name=None, succ_to_preds=None)
 
 
 class WorkerProcessTestActor(PromiseActor):
@@ -53,7 +58,7 @@ class WorkerProcessTestActor(PromiseActor):
         io_meta = dict(chunks=[c.key for c in result.chunks])
 
         graph_key = str(id(graph))
-        executor_ref.execute_graph(session_id, graph_key, serialize_graph(graph),
+        executor_ref.execute_graph(session_id, graph_key, _make_executable_info(graph),
                                    io_meta, None, _promise=True) \
             .then(lambda *_: setattr(self, '_replied', True))
 

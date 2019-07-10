@@ -187,11 +187,11 @@ Total: {{ value['disk_total'] | readable_size }}</pre></td>
                     </thead>
                     <tbody>
                     <tr>
-                        {% if progresses['PRE_PUSHED'] is defined %}
-                            <td>Pre-pushed ({{ progresses['PRE_PUSHED']['total'] }})</td>
-                            <td>{{ progresses['PRE_PUSHED']['operands'] }}</td>
+                        {% if progresses['ENQUEUED'] is defined %}
+                            <td>Enqueued ({{ progresses['ENQUEUED']['total'] }})</td>
+                            <td>{{ progresses['ENQUEUED']['operands'] }}</td>
                         {% else %}
-                            <td>Pre-pushed</td>
+                            <td>Enqueued</td>
                             <td>Not available</td>
                         {% endif %}
                     </tr>

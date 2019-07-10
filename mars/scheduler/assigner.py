@@ -52,7 +52,7 @@ class AssignerActor(SchedulerActor):
 
     @staticmethod
     def gen_uid(session_id):
-        return 's:h1:assigner$%s' % session_id
+        return 's:0:assigner$%s' % session_id
 
     def post_create(self):
         logger.debug('Actor %s running in process %d', self.uid, os.getpid())
@@ -62,16 +62,8 @@ class AssignerActor(SchedulerActor):
         from .resource import ResourceActor
         self._resource_ref = self.get_actor_ref(ResourceActor.default_uid())
 
-        try:
-            service_uid = self.ctx.distributor.make_same_process(
-                's:h1:assign_service$%s' % self._session_id, self.uid)
-        except AttributeError:
-            service_uid = 's:h1:assign_service$%s' % self._session_id
         self._assigner_service_ref = self.ctx.create_actor(
-            AssignerServiceActor, self.ref(), uid=service_uid)
-
-    def pre_destroy(self):
-        super(AssignerActor, self).pre_destroy()
+            AssignerServiceActor, self.ref(), uid=AssignerServiceActor.gen_uid(self._session_id))
 
     def _refresh_worker_metrics(self):
         def _adjust_heap_size(heap):
@@ -211,6 +203,10 @@ class AssignerActor(SchedulerActor):
 
 
 class AssignerServiceActor(SchedulerActor):
+    @staticmethod
+    def gen_uid(session_id):
+        return 's:h1:assigner_service$%s' % session_id
+
     def __init__(self, assigner_ref):
         super(AssignerServiceActor, self).__init__()
         self._assigner_ref = assigner_ref

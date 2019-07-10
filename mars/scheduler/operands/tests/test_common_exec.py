@@ -94,13 +94,13 @@ class FakeExecutionActor(SchedulerActor):
         rec.finish_callbacks = []
 
     @log_unhandled
-    def execute_graph(self, session_id, graph_key, graph_ser, io_meta, data_sizes,
+    def execute_graph(self, session_id, graph_key, executable_info, io_meta, data_sizes,
                       callback=None):
         query_key = (session_id, graph_key)
         assert query_key not in self._graph_records
 
         rec = self._graph_records[query_key] = GraphExecutionRecord(
-            graph_ser, None,
+            executable_info, None,
             data_targets=io_meta['chunks'],
             shared_input_chunks=set(io_meta.get('shared_input_chunks', [])),
         )

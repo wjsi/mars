@@ -38,6 +38,8 @@ class OperandActor(BaseOperandActor):
         self._input_chunks = io_meta['input_chunks']
         self._chunks = io_meta['chunks']
 
+        self._submitted = False
+
         # worker the operand expected to be executed on
         self._target_worker = op_info.get('target_worker')
         self._retries = op_info['retries']
@@ -268,6 +270,7 @@ class OperandActor(BaseOperandActor):
                                  self._op_key, self._target_worker)
                     return
 
+        self._submitted = False
         if dead_workers:
             futures = []
             # remove executed traces in neighbor operands
@@ -414,6 +417,9 @@ class OperandActor(BaseOperandActor):
                 self._op_key, self._get_priority_data(), self._target_worker, _tell=True)
 
     def submit_operand(self):
+        if self._submitted:
+            return
+
         op_io_meta = self._io_meta = self._info['io_meta']
         try:
             key_to_metas = op_io_meta['input_data_metas']
@@ -421,7 +427,7 @@ class OperandActor(BaseOperandActor):
             exec_dag = None
         except KeyError:
             input_chunk_keys = input_data_keys = op_io_meta['input_chunks']
-            exec_dag = self._executable_dag
+            exec_dag = self._executable_info
 
             if input_data_keys:
                 key_to_metas = dict(zip(
@@ -439,13 +445,15 @@ class OperandActor(BaseOperandActor):
                 return
 
         if exec_dag is None:
-            exec_dag = self._graph_refs[0].get_executable_operand_dag(
+            exec_dag = self._graph_refs[0].get_executable_info(
                 self._op_key, input_chunk_keys)
 
         self._assigned_workers = set(self._assigner_ref.submit_operand(
             self._op_key, exec_dag, self._info['io_meta'], self._get_priority_data(),
             key_to_metas, self._target_worker
         ))
+        self._submitted = True
+        return self._assigner_service_ref
 
     @log_unhandled
     def _on_running(self):
@@ -572,6 +580,7 @@ class OperandActor(BaseOperandActor):
 
     def _on_unscheduled(self):
         self.worker = None
+        self._submitted = False
 
     def _add_finished_terminal(self, final_state=None):
         futures = []

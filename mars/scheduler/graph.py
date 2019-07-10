@@ -19,7 +19,7 @@ import operator
 import os
 import random
 import time
-from collections import deque, defaultdict
+from collections import deque, defaultdict, namedtuple
 
 from .analyzer import GraphAnalyzer
 from .assigner import AssignerActor
@@ -41,6 +41,7 @@ from ..utils import serialize_graph, deserialize_graph, log_unhandled, \
     concat_tileable_chunks, build_fetch_chunk, build_fetch_tileable
 
 logger = logging.getLogger(__name__)
+ExecutableInfo = namedtuple('ExecutableInfo', 'dag op_name succ_to_preds')
 
 
 class ResultReceiverActor(SchedulerActor):
@@ -637,17 +638,18 @@ class GraphActor(SchedulerActor):
             self._assign_initial_workers(analyzer)
 
     @log_unhandled
-    def get_executable_operand_dag(self, op_key, input_chunk_keys=None, serialize=True):
+    def get_executable_info(self, op_key, input_chunk_keys=None):
         """
         Make an operand into a worker-executable dag
         :param op_key: operand key
         :param input_chunk_keys: actual input chunks, None if use all chunks in input
-        :param serialize: whether to return serialized dag
         """
-        graph = DAG()
+        chunk_graph = self.get_chunk_graph()
+        exec_graph = DAG()
         input_mapping = dict()
         output_keys = set()
 
+        # build executable dag
         input_chunk_keys = set(input_chunk_keys) if input_chunk_keys is not None else None
         for c in self._op_key_to_chunk[op_key]:
             inputs = []
@@ -657,19 +659,24 @@ class GraphActor(SchedulerActor):
                 except KeyError:
                     inp_chunk = input_mapping[(inp.key, inp.id)] \
                         = build_fetch_chunk(inp, input_chunk_keys).data
-                    graph.add_node(inp_chunk)
+                    exec_graph.add_node(inp_chunk)
                 inputs.append(inp_chunk)
 
             for out in set(c.op.outputs or ()):
                 if (out.key, out.id) not in output_keys:
                     output_keys.add((out.key, out.id))
-                    graph.add_node(out)
+                    exec_graph.add_node(out)
                     for inp in inputs:
-                        graph.add_edge(inp, out)
-        if serialize:
-            return serialize_graph(graph)
-        else:
-            return graph
+                        exec_graph.add_edge(inp, out)
+        # build succ_to_preds
+        succ_preds = defaultdict(list)
+        op_name = None
+        for c in self._op_key_to_chunk[op_key]:
+            op_name = type(c.op).__name__
+            for succ in chunk_graph.iter_successors(c):
+                succ_preds[succ.op.key] = list(set(pred.op.key for pred in chunk_graph.predecessors(succ)))
+        return ExecutableInfo(
+            dag=serialize_graph(exec_graph), op_name=op_name, succ_to_preds=succ_preds)
 
     @staticmethod
     def _collect_operand_io_meta(graph, chunks):
@@ -737,7 +744,7 @@ class GraphActor(SchedulerActor):
             io_meta = self._collect_operand_io_meta(chunk_graph, chunks)
             op_info['op_name'] = meta_op_info['op_name'] = op_name
             op_info['io_meta'] = io_meta
-            op_info['executable_dag'] = self.get_executable_operand_dag(op_key)
+            op_info['executable_info'] = self.get_executable_info(op_key)
 
             if io_meta['predecessors']:
                 state = OperandState.UNSCHEDULED
@@ -764,7 +771,7 @@ class GraphActor(SchedulerActor):
                 uid=op_uid, address=scheduler_addr, wait=False
             )
             if _clean_info:
-                op_info.pop('executable_dag', None)
+                op_info.pop('executable_info', None)
                 del op_info['io_meta']
 
         self.state = GraphState.RUNNING
@@ -791,7 +798,7 @@ class GraphActor(SchedulerActor):
                 op_ref = op_refs[op_key] = self.ctx.actor_ref(op_uid, address=scheduler_addr)
                 append_futures.append(op_ref.append_graph(self._graph_key, op_info.copy(), _wait=False))
                 if _clean_info:
-                    op_info.pop('executable_dag', None)
+                    op_info.pop('executable_info', None)
                     del op_info['io_meta']
             [future.result() for future in append_futures]
 
