@@ -129,8 +129,8 @@ class AssignerActor(SchedulerActor):
     def pre_destroy(self):
         self._actual_ref.destroy()
 
-    def allocate_top_resources(self):
-        self._actual_ref.allocate_top_resources(_tell=True)
+    def allocate_top_resources(self, max_allocates=None):
+        self._actual_ref.allocate_top_resources(max_allocates, _tell=True)
 
     def mark_metrics_expired(self):
         logger.debug('Metrics cache marked as expired.')
@@ -264,7 +264,7 @@ class AssignEvaluationActor(SchedulerActor):
         self.allocate_top_resources()
         self.ref().periodical_allocate(_tell=True, _delay=0.5)
 
-    def allocate_top_resources(self):
+    def allocate_top_resources(self, max_allocates=None):
         """
         Allocate resources given the order in AssignerActor
         """
@@ -278,8 +278,11 @@ class AssignEvaluationActor(SchedulerActor):
 
         unassigned = []
         reject_workers = set()
-        # the assigning procedure will continue till
-        while len(reject_workers) < len(self._worker_metrics):
+        assigned = 0
+        # the assigning procedure will continue till all workers rejected
+        # or max_allocates reached
+        max_allocates = max_allocates or sys.maxsize
+        while len(reject_workers) < len(self._worker_metrics) and assigned < max_allocates:
             item = self._assigner_ref.pop_head()
             if not item:
                 break
@@ -298,13 +301,14 @@ class AssignEvaluationActor(SchedulerActor):
             reject_workers.update(rejects)
             if alloc_ep:
                 # assign successfully, we remove the application
-                self._assigner_ref.remove_apply(item.op_key)
+                self._assigner_ref.remove_apply(item.op_key, _tell=True)
+                assigned += 1
             else:
                 # put the unassigned item into unassigned list to add back to the queue later
                 unassigned.append(item)
         if unassigned:
             # put unassigned back to the queue, if any
-            self._assigner_ref.extend(unassigned)
+            self._assigner_ref.extend(unassigned, _tell=True)
 
     @log_unhandled
     def _allocate_resource(self, session_id, op_key, op_info, target_worker=None, reject_workers=None):
