@@ -46,6 +46,9 @@ class WorkerApplication(BaseApplication):
         parser.add_argument('--spill-dir', help='spill directory')
         parser.add_argument('--plasma-one-mapped-file', action='store_true',
                             help='path of Plasma UNIX socket')
+        parser.add_argument('--plasma-dir', help='path of plasma directory. When specified, the size '
+                                                 'of plasma store will not be taken into account when '
+                                                 'managing host memory')
 
         compress_types = ', '.join(v.value for v in CompressType.__members__.values())
         parser.add_argument('--disk-compression',
@@ -85,6 +88,8 @@ class WorkerApplication(BaseApplication):
             min_mem_size=self.args.min_mem,
             disk_compression=self.args.disk_compression.lower(),
             transfer_compression=self.args.transfer_compression.lower(),
+            plasma_dir=self.args.plasma_dir,
+            use_ext_plasma_dir=bool(self.args.plasma_dir),
         )
         # start plasma
         self._service.start_plasma(one_mapped_file=self.args.plasma_one_mapped_file or False)
