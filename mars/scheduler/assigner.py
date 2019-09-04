@@ -301,7 +301,7 @@ class AssignEvaluationActor(SchedulerActor):
             reject_workers.update(rejects)
             if alloc_ep:
                 # assign successfully, we remove the application
-                self._assigner_ref.remove_apply(item.op_key, _tell=True)
+                self._assigner_ref.remove_apply(item.op_key, _tell=True, _wait=False)
                 assigned += 1
             else:
                 # put the unassigned item into unassigned list to add back to the queue later

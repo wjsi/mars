@@ -498,7 +498,8 @@ class ExecutionActor(WorkerActor):
                 .then(lambda *_: self._mem_quota_ref.request_batch_quota(quota_request, _promise=True)) \
                 .then(lambda *_: self._dispatch_ref.get_free_slot('cpu', _promise=True)) \
                 .then(lambda uid: self._send_calc_request(session_id, graph_key, uid)) \
-                .then(lambda saved_keys: self._store_results(session_id, graph_key, saved_keys)) \
+                .then(lambda saved_keys, store_ref: self._store_results(
+                        session_id, graph_key, saved_keys, store_ref)) \
                 .then(_handle_success, _handle_rejection)
 
     @log_unhandled
@@ -677,7 +678,7 @@ class ExecutionActor(WorkerActor):
         return promise.all_(promises)
 
     @log_unhandled
-    def _store_results(self, session_id, graph_key, saved_keys):
+    def _store_results(self, session_id, graph_key, saved_keys, store_ref):
         """
         Store calc results into shared cache or spill
         :param session_id: session id
@@ -695,22 +696,22 @@ class ExecutionActor(WorkerActor):
                      graph_key, chunk_keys, graph_record.calc_actor_uid)
         self._update_state(session_id, graph_key, ExecutionState.STORING)
 
-        raw_calc_ref = self.ctx.actor_ref(graph_record.calc_actor_uid)
-        calc_ref = self.promise_ref(raw_calc_ref)
+        raw_store_ref = self.ctx.actor_ref(store_ref)
+        store_ref = self.promise_ref(store_ref)
 
         if graph_record.stop_requested:
             logger.debug('Graph %s already marked for stop, quit.', graph_key)
-            if (self._daemon_ref is None or self._daemon_ref.is_actor_process_alive(raw_calc_ref)) \
-                    and self.ctx.has_actor(raw_calc_ref):
+            if (self._daemon_ref is None or self._daemon_ref.is_actor_process_alive(raw_store_ref)) \
+                    and self.ctx.has_actor(raw_store_ref):
                 logger.debug('Try remove keys for graph %s.', graph_key)
-                raw_calc_ref.remove_cache(session_id, list(saved_keys), _tell=True)
+                raw_store_ref.remove_cache(session_id, list(saved_keys), _tell=True)
             logger.debug('Graph %s already marked for stop, quit.', graph_key)
             raise ExecutionInterrupted
 
         storage_client.unpin_data_keys(session_id, graph_record.pinned_keys, graph_key)
         self._dump_execution_states()
 
-        if self._daemon_ref is not None and not self._daemon_ref.is_actor_process_alive(raw_calc_ref):
+        if self._daemon_ref is not None and not self._daemon_ref.is_actor_process_alive(raw_store_ref):
             raise WorkerProcessStopped
 
         def _cache_result(*_):
@@ -721,7 +722,7 @@ class ExecutionActor(WorkerActor):
             # no endpoints to send, dump keys into shared memory and return
             logger.debug('Worker graph %s(%s) finished execution. Dumping results into plasma...',
                          graph_key, graph_record.op_string)
-            return calc_ref.store_results(session_id, saved_keys, _promise=True) \
+            return store_ref.store_results(session_id, saved_keys, _promise=True) \
                 .then(_cache_result)
         else:
             # dump keys into shared memory and send
@@ -735,7 +736,7 @@ class ExecutionActor(WorkerActor):
             data_to_addresses = dict((k, v) for k, v in send_addresses.items()
                                      if k in saved_keys)
 
-            return calc_ref.store_results(session_id, saved_keys, _promise=True) \
+            return store_ref.store_results(session_id, saved_keys, _promise=True) \
                 .then(_cache_result) \
                 .then(lambda *_: functools.partial(self._do_active_transfer,
                                                    session_id, graph_key, data_to_addresses))
@@ -788,6 +789,7 @@ class ExecutionActor(WorkerActor):
         logger.debug('Adding callback %r for graph %s', callback, graph_key)
         try:
             args, kwargs = self._result_cache[(session_id, graph_key)].build_args()
+            kwargs['_wait'] = False
             self.tell_promise(callback, *args, **kwargs)
         except KeyError:
             self._graph_records[(session_id, graph_key)].finish_callbacks.append(callback)

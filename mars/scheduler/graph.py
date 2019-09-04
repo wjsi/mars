@@ -778,6 +778,7 @@ class GraphActor(SchedulerActor):
         self._graph_meta_ref.update_op_infos(meta_op_infos, _tell=True, _wait=False)
 
         if _start:
+            logger.debug('Awaiting operand creation results')
             existing_keys = []
             for op_key, future in op_refs.items():
                 try:

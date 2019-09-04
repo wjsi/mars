@@ -36,6 +36,7 @@ class CpuCalcActor(WorkerActor):
         self._dispatch_ref = None
         self._events_ref = None
         self._status_ref = None
+        self._result_store_ref = None
 
         self._execution_pool = None
 
@@ -58,7 +59,14 @@ class CpuCalcActor(WorkerActor):
         if not self.ctx.has_actor(self._events_ref):
             self._events_ref = None
 
+        store_uid = self.ctx.distributor.make_same_process(
+            ResultStoreActor.default_uid(), self.uid)
+        self._result_store_ref = self.ctx.create_actor(ResultStoreActor, uid=store_uid)
+
         self._execution_pool = self.ctx.threadpool(1)
+
+    def pre_destroy(self):
+        self._result_store_ref.destroy()
 
     @staticmethod
     def _get_keys_to_fetch(graph):
@@ -216,7 +224,7 @@ class CpuCalcActor(WorkerActor):
                     self._release_local_quota(session_id, k)
 
             if not exc_info:
-                self.tell_promise(callback, keys)
+                self.tell_promise(callback, keys, self._result_store_ref)
             else:
                 for k in chunk_targets:
                     self.storage_client.delete(session_id, k, [DataStorageDevice.PROC_MEMORY])
@@ -226,6 +234,18 @@ class CpuCalcActor(WorkerActor):
         return self._fetch_keys_to_process(session_id, keys_to_fetch) \
             .then(lambda context_dict: _start_calc(context_dict)) \
             .then(lambda keys: _finalize(keys, None), lambda *exc_info: _finalize(None, exc_info))
+
+
+class ResultStoreActor(WorkerActor):
+    def __init__(self):
+        super(ResultStoreActor, self).__init__()
+        self._mem_quota_ref = None
+
+    def post_create(self):
+        super(ResultStoreActor, self).post_create()
+
+        from .quota import MemQuotaActor
+        self._mem_quota_ref = self.promise_ref(MemQuotaActor.default_uid())
 
     @promise.reject_on_exception
     @log_unhandled

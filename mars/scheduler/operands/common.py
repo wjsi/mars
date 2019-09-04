@@ -469,7 +469,7 @@ class OperandActor(BaseOperandActor):
         [f.result() for f in pred_futures]
 
         if not any(f.result() for f in succ_futures):
-            self._assigner_ref.allocate_top_resources(1, _tell=True)
+            self._assigner_ref.allocate_top_resources(_tell=True)
 
     @log_unhandled
     def _on_fatal(self):
