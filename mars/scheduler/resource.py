@@ -232,6 +232,9 @@ class ResourceActor(SchedulerActor):
 
         self._worker_allocations[endpoint][(session_id, op_key)] = (alloc_dict, time.time())
         res_used.update(new_res_used)
+        for k, v in alloc_dict.items():
+            if vacancies.get(k, 0) > 0:
+                vacancies[k] = max(0, vacancies[k] - v)
         return True
 
     def deallocate_resource(self, session_id, op_key, endpoint):

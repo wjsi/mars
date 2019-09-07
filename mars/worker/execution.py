@@ -19,8 +19,8 @@ import time
 from collections import defaultdict
 
 from .. import promise
-from ..compat import reduce, six, Enum, BrokenPipeError, \
-    ConnectionRefusedError, TimeoutError  # pylint: disable=W0622
+from ..compat import reduce, six, BrokenPipeError, ConnectionRefusedError, \
+    TimeoutError  # pylint: disable=W0622
 from ..config import options
 from ..errors import PinDataKeyFailed, WorkerProcessStopped, WorkerDead, \
     ExecutionInterrupted, DependencyMissing

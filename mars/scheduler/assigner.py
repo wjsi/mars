@@ -276,6 +276,8 @@ class AssignEvaluationActor(SchedulerActor):
         if not self._worker_metrics:
             return
 
+        assign_start_time = time.time()
+
         unassigned = []
         reject_workers = set()
         assigned = 0
@@ -306,6 +308,9 @@ class AssignEvaluationActor(SchedulerActor):
             else:
                 # put the unassigned item into unassigned list to add back to the queue later
                 unassigned.append(item)
+        if assigned:
+            logger.debug('%d items assigned, time cost %s', assigned, time.time() - assign_start_time)
+
         if unassigned:
             # put unassigned back to the queue, if any
             self._assigner_ref.extend(unassigned, _tell=True)
