@@ -54,6 +54,7 @@ class ResourceActor(SchedulerActor):
         self._meta_cache = dict()
         self._worker_blacklist = BlacklistSet(options.scheduler.worker_blacklist_time)
         self._worker_allocations = dict()
+        self._worker_used_resources = dict()
 
         self._last_heartbeat_time = time.time()
         self._last_heartbeat_interval = 0
@@ -124,7 +125,9 @@ class ResourceActor(SchedulerActor):
 
         logger.warning('Workers %r dead, detaching from ResourceActor.', workers)
         for w in workers:
-            del self._meta_cache[w]
+            self._meta_cache.pop(w, None)
+            self._worker_used_resources.pop(w, None)
+            self._worker_allocations.pop(w, None)
             self._worker_blacklist.add(w)
 
         self._broadcast_sessions(SessionActor.handle_worker_change, [], workers)
@@ -207,32 +210,27 @@ class ResourceActor(SchedulerActor):
         worker_stats = self._meta_cache[endpoint]['hardware']
         if endpoint not in self._worker_allocations:
             self._worker_allocations[endpoint] = dict()
-        if session_id not in self._worker_allocations[endpoint]:
-            self._worker_allocations[endpoint][session_id] = dict()
-        worker_allocs = self._worker_allocations[endpoint][session_id]
 
-        res_used = defaultdict(lambda: 0)
-        free_alloc_keys = []
-        for alloc in worker_allocs.values():
-            for k, v in alloc[0].items():
-                res_used[k] += v
-        for k in free_alloc_keys:
-            self.deallocate_resource(session_id, k, endpoint)
+        try:
+            res_used = self._worker_used_resources[endpoint]
+        except KeyError:
+            res_used = self._worker_used_resources[endpoint] = dict()
 
+        new_res_used = defaultdict(lambda: 0, res_used)
         for k, v in alloc_dict.items():
-            res_used[k] += v
+            new_res_used[k] += v
 
-        sufficient = True
-        for k, v in res_used.items():
-            if res_used[k] > worker_stats.get(k, 0):
-                sufficient = False
-                break
+        for res_name, used in new_res_used.items():
+            if used > worker_stats.get(res_name + '_total', 0):
+                return False
+            elif res_name == 'cpu' and worker_stats['job_cpu_intensity'] >= 2:
+                free_stat = worker_stats.get(res_name, 0)
+                if free_stat < 2:
+                    return False
 
-        if sufficient:
-            self._worker_allocations[endpoint][session_id][op_key] = (alloc_dict, time.time())
-            return True
-        else:
-            return False
+        self._worker_allocations[endpoint][(session_id, op_key)] = (alloc_dict, time.time())
+        res_used.update(new_res_used)
+        return True
 
     def deallocate_resource(self, session_id, op_key, endpoint):
         """
@@ -241,7 +239,15 @@ class ResourceActor(SchedulerActor):
         :param op_key: operand key
         :param endpoint: worker endpoint
         """
+        session_op_key = (session_id, op_key)
         try:
-            del self._worker_allocations[endpoint][session_id][op_key]
+            worker_allocation = self._worker_allocations[endpoint]
+            task_res, _ = worker_allocation[session_op_key]
+
+            res_used = self._worker_used_resources[endpoint]
+
+            for k, v in task_res.items():
+                res_used[k] -= v
+            del worker_allocation[session_op_key]
         except KeyError:
             pass

@@ -18,7 +18,7 @@ import time
 import logging
 from collections import defaultdict
 
-from .utils import WorkerActor, ExpMeanHolder
+from .utils import WorkerActor, ExpMeanHolder, ExecutionState
 from .. import resource
 from ..config import options
 from ..compat import six
@@ -144,8 +144,15 @@ class StatusReporterActor(WorkerActor):
             for k, v in six.iteritems(slots_data):
                 meta_dict['slots'][k] = v
 
-            meta_dict['progress'] = self._status_ref.get_progress()
+            meta_dict['progress'] = progress = self._status_ref.get_progress()
+            running_count = len([gitem for gdict in progress.values()
+                                 for gitem in gdict.values()
+                                 if gitem['stage'] == ExecutionState.CALCULATING.name])
             meta_dict['details'] = gather_node_info()
+            if running_count:
+                hw_metrics['job_cpu_intensity'] = cpu_percent / 100.0 / running_count
+            else:
+                hw_metrics['job_cpu_intensity'] = 0
 
             self._resource_ref.set_worker_meta(self._endpoint, meta_dict)
         except Exception as ex:
@@ -196,13 +203,13 @@ class StatusActor(WorkerActor):
     def get_progress(self):
         return copy.deepcopy(self._progress)
 
-    def update_progress(self, session_id, graph_key, ops, stage):
+    def update_progress(self, session_id, graph_key, op_name, state):
         """
         Update statuses of operands
         :param session_id: session id
         :param graph_key: graph key
-        :param ops: operand name
-        :param stage: operand stage
+        :param op_name: operand name
+        :param state: operand execution state
         """
         session_id = str(session_id)
         graph_key = str(graph_key)
@@ -215,7 +222,7 @@ class StatusActor(WorkerActor):
             graph_dict = session_dict[graph_key]
         except KeyError:
             graph_dict = session_dict[graph_key] = dict()
-        graph_dict.update(dict(operands=ops, stage=stage))
+        graph_dict.update(dict(operands=op_name, stage=state.name))
 
     def remove_progress(self, session_id, graph_key):
         try:

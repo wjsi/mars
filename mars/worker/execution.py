@@ -29,17 +29,10 @@ from ..operands import Fetch, FetchShuffle
 from ..utils import BlacklistSet, deserialize_graph, log_unhandled, build_exc_info, \
     calc_data_size, get_chunk_shuffle_key
 from .storage import DataStorageDevice
-from .utils import WorkerActor, ExpiringCache, concat_operand_keys, \
+from .utils import WorkerActor, ExpiringCache, ExecutionState, concat_operand_keys, \
     build_quota_key, change_quota_key_owner
 
 logger = logging.getLogger(__name__)
-
-
-class ExecutionState(Enum):
-    ALLOCATING = 'allocating'
-    PREPARING_INPUTS = 'preparing_inputs'
-    CALCULATING = 'calculating'
-    STORING = 'storing'
 
 
 class GraphExecutionRecord(object):
@@ -408,8 +401,8 @@ class ExecutionActor(WorkerActor):
         record = self._graph_records[(session_id, key)]
         record.state = state
         if self._status_ref:
-            self._status_ref.update_progress(session_id, key, record.op_string, state.name,
-                                             _tell=True, _wait=False)
+            self._status_ref.update_progress(
+                session_id, key, record.op_string, state, _tell=True, _wait=False)
 
     @promise.reject_on_exception
     @log_unhandled

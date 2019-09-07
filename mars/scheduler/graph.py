@@ -222,6 +222,8 @@ class GraphActor(SchedulerActor):
         self._state = state
         self._final_state = final_state
 
+        self._max_depth = 0
+
         self._operand_free_paused = False
 
         self._cluster_info_ref = None
@@ -625,8 +627,10 @@ class GraphActor(SchedulerActor):
         self._assigned_workers = set(worker_slots)
         analyzer = GraphAnalyzer(chunk_graph, worker_slots)
 
-        for k, v in analyzer.calc_depths().items():
+        depths = analyzer.calc_depths()
+        for k, v in depths.items():
             operand_infos[k]['optimize']['depth'] = v
+        self._max_depth = max(depths.values())
 
         for k, v in analyzer.calc_descendant_sizes().items():
             operand_infos[k]['optimize']['descendant_size'] = v
