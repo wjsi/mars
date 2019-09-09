@@ -317,6 +317,7 @@ default_options.register_option('scheduler.execution_timeout', 600, validator=is
 default_options.register_option('scheduler.retry_num', 4, validator=is_integer, serialize=True)
 default_options.register_option('scheduler.fetch_limit', 10 * 1024 ** 2, validator=is_integer, serialize=True)
 default_options.register_option('scheduler.retry_delay', 60, validator=is_integer, serialize=True)
+default_options.register_option('scheduler.shallow_mode_depth', 2, validator=is_integer, serialize=True)
 
 default_options.register_option('scheduler.dump_graph_data', False, validator=is_bool)
 

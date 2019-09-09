@@ -46,6 +46,7 @@ class BaseOperandActor(SchedulerActor):
         io_meta = self._io_meta = op_info['io_meta']
         self._pred_keys = set(io_meta['predecessors'])
         self._succ_keys = set(io_meta['successors'])
+        self._shallow_mode = op_info.get('shallow_mode', False)
 
         self._executable_dag = op_info.pop('executable_dag', None)
 

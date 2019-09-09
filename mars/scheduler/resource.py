@@ -198,13 +198,14 @@ class ResourceActor(SchedulerActor):
             ref = self.ctx.actor_ref(ExecutionActor.default_uid(), address=w)
             getattr(ref, handler)(*args, **kwargs)
 
-    def allocate_resource(self, session_id, op_key, endpoint, alloc_dict):
+    def allocate_resource(self, session_id, op_key, endpoint, alloc_dict, shallow_mode=False):
         """
         Try allocate resource for operands
         :param session_id: session id
         :param op_key: operand key
         :param endpoint: worker endpoint
         :param alloc_dict: allocation dict, listing resources needed by the operand
+        :param shallow_mode: use shallow mode to allocate
         :return: True if allocated successfully
         """
         worker_stats = self._meta_cache[endpoint]['hardware']
@@ -223,9 +224,10 @@ class ResourceActor(SchedulerActor):
         for res_name, used in new_res_used.items():
             if used > worker_stats.get(res_name + '_total', 0):
                 return False
-            elif res_name == 'cpu' and worker_stats['job_cpu_intensity'] >= 2:
+            elif res_name == 'cpu' and \
+                    (not shallow_mode or worker_stats['job_cpu_intensity'] >= 1.5):
                 free_stat = worker_stats.get(res_name, 0)
-                if free_stat < 2:
+                if free_stat < 0.5:
                     return False
 
         self._worker_allocations[endpoint][(session_id, op_key)] = (alloc_dict, time.time())

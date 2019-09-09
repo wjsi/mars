@@ -349,7 +349,8 @@ class AssignEvaluationActor(SchedulerActor):
         alloc_dict = dict(cpu=options.scheduler.default_cpu_usage, memory=sum(input_sizes.values()))
         rejects = []
         for worker_ep in candidate_workers:
-            if self._resource_ref.allocate_resource(session_id, op_key, worker_ep, alloc_dict):
+            if self._resource_ref.allocate_resource(
+                    session_id, op_key, worker_ep, alloc_dict, op_info.get('shallow_mode', False)):
                 logger.debug('Operand %s(%s) allocated to run in %s', op_key, op_info['op_name'], worker_ep)
 
                 self.get_actor_ref(BaseOperandActor.gen_uid(session_id, op_key)) \

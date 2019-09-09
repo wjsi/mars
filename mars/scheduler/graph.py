@@ -222,7 +222,7 @@ class GraphActor(SchedulerActor):
         self._state = state
         self._final_state = final_state
 
-        self._max_depth = 0
+        self._shallow_mode = False
 
         self._operand_free_paused = False
 
@@ -630,7 +630,11 @@ class GraphActor(SchedulerActor):
         depths = analyzer.calc_depths()
         for k, v in depths.items():
             operand_infos[k]['optimize']['depth'] = v
-        self._max_depth = max(depths.values())
+        max_depth = max(depths.values())
+
+        if max_depth < options.scheduler.shallow_mode_depth:
+            self._shallow_mode = True
+            logger.debug('Use shallow mode to run graph %s', self._graph_key)
 
         for k, v in analyzer.calc_descendant_sizes().items():
             operand_infos[k]['optimize']['descendant_size'] = v
@@ -740,6 +744,7 @@ class GraphActor(SchedulerActor):
             io_meta = self._collect_operand_io_meta(chunk_graph, chunks)
             op_info['op_name'] = meta_op_info['op_name'] = op_name
             op_info['io_meta'] = io_meta
+            op_info['shallow_mode'] = self._shallow_mode
             op_info['executable_dag'] = self.get_executable_operand_dag(op_key)
 
             if io_meta['predecessors']:
