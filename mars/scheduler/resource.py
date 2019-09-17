@@ -225,16 +225,13 @@ class ResourceActor(SchedulerActor):
             if used > worker_stats.get(res_name + '_total', 0):
                 return False
             elif res_name == 'cpu' and \
-                    (not shallow_mode or worker_stats['job_cpu_intensity'] >= 1.5):
+                    (not shallow_mode or worker_stats.get('job_cpu_intensity', 0) >= 1.5):
                 free_stat = worker_stats.get(res_name, 0)
                 if free_stat < 0.5:
                     return False
 
         self._worker_allocations[endpoint][(session_id, op_key)] = (alloc_dict, time.time())
         res_used.update(new_res_used)
-        for k, v in alloc_dict.items():
-            if vacancies.get(k, 0) > 0:
-                vacancies[k] = max(0, vacancies[k] - v)
         return True
 
     def deallocate_resource(self, session_id, op_key, endpoint):

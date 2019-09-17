@@ -468,7 +468,7 @@ class OperandActor(BaseOperandActor):
             pred_futures.extend(self._add_finished_terminal())
         [f.result() for f in pred_futures]
 
-        if not any(f.result() for f in succ_futures):
+        if self._shallow_mode and not any(f.result() for f in succ_futures):
             self._assigner_ref.allocate_top_resources(_tell=True)
 
     @log_unhandled
