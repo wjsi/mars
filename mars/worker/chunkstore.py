@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+import time
 
 from ..actors import FunctionActor
 from ..errors import StoreFull, StoreKeyExists
@@ -51,11 +52,14 @@ class PlasmaChunkStore(object):
     Wrapper of plasma client for Mars objects
     """
     def __init__(self, plasma_client, mapper_ref):
+        from gevent.threadpool import ThreadPool
         from ..serialize.dataserializer import mars_serialize_context
 
         self._plasma_client = plasma_client
         self._actual_size = None
         self._serialize_context = mars_serialize_context()
+
+        self._write_pool = ThreadPool(1)
 
         self._mapper_ref = mapper_ref
 
@@ -200,14 +204,21 @@ class PlasmaChunkStore(object):
                 self.delete(session_id, chunk_key)
                 obj_id = self._new_object_id(session_id, chunk_key)
 
+        def _write_func():
+            start_time = time.time()
+            buf = self._plasma_client.create(obj_id, serialized.total_bytes)
+            stream = pyarrow.FixedSizeBufferWriter(buf)
+            stream.set_memcopy_threads(6)
+            serialized.write_to(stream)
+            self._plasma_client.seal(obj_id)
+            logger.debug('TESTLOG: Writing chunk %s with size %s to plasma cost %s',
+                         chunk_key, serialized.total_bytes, time.time() - start_time)
+            return buf
+
         try:
             serialized = pyarrow.serialize(value, self._serialize_context)
             try:
-                buffer = self._plasma_client.create(obj_id, serialized.total_bytes)
-                stream = pyarrow.FixedSizeBufferWriter(buffer)
-                stream.set_memcopy_threads(6)
-                serialized.write_to(stream)
-                self._plasma_client.seal(obj_id)
+                buffer = self._write_pool.spawn(_write_func).result()
             finally:
                 del serialized
             return buffer
