@@ -73,7 +73,8 @@ class SessionActor(SchedulerActor):
             self.ctx.destroy_actor(mut_tensor_ref)
 
     @log_unhandled
-    def submit_tileable_graph(self, serialized_graph, graph_key, target_tileables=None, compose=True):
+    def submit_tileable_graph(self, serialized_graph, graph_key, target_tileables=None,
+                              compose=True, schedule_args=None):
         from .graph import GraphActor, GraphMetaActor
 
         graph_uid = GraphActor.gen_uid(self._session_id, graph_key)
@@ -85,7 +86,7 @@ class SessionActor(SchedulerActor):
         self._graph_meta_refs[graph_key] = self.ctx.actor_ref(
             GraphMetaActor.gen_uid(self._session_id, graph_key), address=graph_addr)
 
-        graph_ref.execute_graph(_tell=True, compose=compose)
+        graph_ref.execute_graph(compose=compose, schedule_args=schedule_args, _tell=True)
         for tileable_key in target_tileables or ():
             if tileable_key not in self._tileable_to_graph:
                 self._tileable_to_graph[tileable_key] = graph_ref

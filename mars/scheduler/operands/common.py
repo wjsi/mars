@@ -58,7 +58,6 @@ class OperandActor(BaseOperandActor):
         self._input_worker_scores = dict()
         self._worker_scores = dict()
 
-        self._allocated = self._is_initial
         self._submit_promise = None
 
     @property
@@ -468,7 +467,7 @@ class OperandActor(BaseOperandActor):
             pred_futures.extend(self._add_finished_terminal())
         [f.result() for f in pred_futures]
 
-        if self._shallow_mode and not any(f.result() for f in succ_futures):
+        if self._schedule_args.get('shallow_mode', False) and not any(f.result() for f in succ_futures):
             self._assigner_ref.allocate_top_resources(_tell=True)
 
     @log_unhandled

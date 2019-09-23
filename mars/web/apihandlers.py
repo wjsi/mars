@@ -112,13 +112,15 @@ class GraphsApiHandler(MarsApiRequestHandler):
             graph = self.get_argument('graph')
             target = self.get_argument('target').split(',')
             compose = bool(int(self.get_argument('compose', '1')))
+            schedule_args = json.loads(self.get_argument('schedule_args', '{}'))
         except web.MissingArgumentError as ex:
             self.write(json.dumps(dict(msg=str(ex))))
             raise web.HTTPError(400, reason='Argument missing')
 
         try:
             graph_key = tokenize(str(uuid.uuid4()))
-            self.web_api.submit_graph(session_id, graph, graph_key, target, compose)
+            self.web_api.submit_graph(session_id, graph, graph_key, target,
+                                      compose=compose, schedule_args=schedule_args)
             self.write(json.dumps(dict(graph_key=graph_key)))
         except:  # noqa: E722
             self._dump_exception(sys.exc_info())

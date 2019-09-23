@@ -167,7 +167,7 @@ class Test(unittest.TestCase):
             a = mt.ones((100, 100), chunk_size=30)
             b = mt.ones((100, 100), chunk_size=30)
             c = a.dot(b)
-            value = sess.run(c, timeout=timeout)
+            value = sess.run(c, schedule_args=dict(submit_initials=True, shallow_mode=True), timeout=timeout)
             assert_array_equal(value, np.ones((100, 100)) * 100)
 
             # check resubmission

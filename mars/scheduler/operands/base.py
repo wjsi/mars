@@ -28,7 +28,7 @@ class BaseOperandActor(SchedulerActor):
         return 's:h1:operand$%s$%s' % (session_id, op_key)
 
     def __init__(self, session_id, graph_id, op_key, op_info, worker=None,
-                 with_kvstore=True, schedulers=None):
+                 with_kvstore=True, schedulers=None, submitted=False):
         super(BaseOperandActor, self).__init__()
         self._session_id = session_id
         self._graph_ids = [graph_id]
@@ -46,8 +46,8 @@ class BaseOperandActor(SchedulerActor):
         io_meta = self._io_meta = op_info['io_meta']
         self._pred_keys = set(io_meta['predecessors'])
         self._succ_keys = set(io_meta['successors'])
-        self._shallow_mode = op_info.get('shallow_mode', False)
 
+        self._schedule_args = op_info.get('schedule_args', {})
         self._executable_dag = op_info.pop('executable_dag', None)
 
         # set of finished predecessors, used to decide whether we should move the operand to ready
@@ -76,6 +76,8 @@ class BaseOperandActor(SchedulerActor):
         self._with_kvstore = with_kvstore
         self._kv_store_ref = None
 
+        self._allocated = submitted
+
         if schedulers:  # pragma: no branch
             self.set_schedulers(schedulers)
 
@@ -93,7 +95,8 @@ class BaseOperandActor(SchedulerActor):
         if self._with_kvstore:
             self._kv_store_ref = self.ctx.actor_ref(KVStoreActor.default_uid())
 
-        self.ref().start_operand(_tell=True)
+        if self._schedule_args.get('submit_initials'):
+            self.ref().start_operand(_tell=True)
 
     @property
     def state(self):

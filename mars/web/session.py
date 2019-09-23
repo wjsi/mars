@@ -139,6 +139,7 @@ class Session(object):
         timeout = kw.pop('timeout', -1)
         compose = kw.pop('compose', True)
         fetch = kw.pop('fetch', True)
+        schedule_args = kw.pop('schedule_args', dict())
         if kw:
             raise TypeError('run got unexpected key arguments {0}'.format(', '.join(kw.keys())))
 
@@ -152,7 +153,8 @@ class Session(object):
         session_url = self._endpoint + '/api/session/' + self._session_id
         graph_json = graph.to_json()
 
-        resp_json = self._submit_graph(graph_json, targets_join, compose=compose)
+        resp_json = self._submit_graph(
+            graph_json, targets_join, compose=compose, schedule_args=schedule_args)
         graph_key = resp_json['graph_key']
         graph_url = '%s/graph/%s' % (session_url, graph_key)
 
@@ -348,12 +350,13 @@ class Session(object):
             raise SystemError('Failed to stop graph execution. Code: %d, Reason: %s, Content:\n%s' %
                               (resp.status_code, resp.reason, resp.text))
 
-    def _submit_graph(self, graph_json, targets, compose=True):
+    def _submit_graph(self, graph_json, targets, compose=True, schedule_args=None):
         session_url = self._endpoint + '/api/session/' + self._session_id
         resp = self._req_session.post(session_url + '/graph', dict(
-            graph=json.dumps(graph_json),
+            graph=json.dumps(graph_json, separators=(',', ':')),
             target=targets,
-            compose='1' if compose else '0'
+            compose='1' if compose else '0',
+            schedule_args=json.dumps(schedule_args, separators=(',', ':')),
         ))
         if resp.status_code >= 400:
             resp_json = json.loads(resp.text)

@@ -87,6 +87,7 @@ class Test(WorkerCase):
         with self._start_calc_pool() as (_pool, test_actor):
             quota_ref = test_actor.promise_ref(MemQuotaActor.default_uid())
             calc_ref = test_actor.promise_ref(CpuCalcActor.default_uid())
+            result_store_ref = test_actor.promise_ref(calc_ref.get_result_store_ref())
 
             session_id = str(uuid.uuid4())
             data_list = [np.random.random((10, 10)) for _ in range(3)]
@@ -143,7 +144,7 @@ class Test(WorkerCase):
                     calc_ref.calc(session_id, add_chunk.op.key, serialize_graph(exec_graph),
                                   [add_chunk.key], _promise=True)
                         .then(_extract_value_ref)
-                        .then(lambda *_: calc_ref.store_results(session_id, [add_chunk.key], _promise=True))
+                        .then(lambda *_: result_store_ref.store_results(session_id, [add_chunk.key], _promise=True))
                 )
 
             self.assertIsNone(ref_store[-1]())
@@ -187,5 +188,4 @@ class Test(WorkerCase):
                 self.waitp(
                     calc_ref.calc(session_id, add_chunk.op.key, serialize_graph(exec_graph),
                                   [add_chunk.key], _promise=True)
-                        .then(lambda *_: calc_ref.store_results(session_id, [add_chunk.key], _promise=True))
                 )

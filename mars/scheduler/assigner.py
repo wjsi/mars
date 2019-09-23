@@ -331,6 +331,7 @@ class AssignEvaluationActor(SchedulerActor):
         reject_workers = reject_workers or set()
 
         op_io_meta = op_info.get('io_meta', {})
+        schedule_args = op_info.get('schedule_args', {})
         try:
             input_metas = op_io_meta['input_data_metas']
             input_data_keys = list(input_metas.keys())
@@ -359,7 +360,7 @@ class AssignEvaluationActor(SchedulerActor):
         rejects = []
         for worker_ep in candidate_workers:
             if self._resource_ref.allocate_resource(
-                    session_id, op_key, worker_ep, alloc_dict, op_info.get('shallow_mode', False)):
+                    session_id, op_key, worker_ep, alloc_dict, schedule_args.get('shallow_mode', False)):
                 logger.debug('Operand %s(%s) allocated to run in %s', op_key, op_info['op_name'], worker_ep)
 
                 self.get_actor_ref(BaseOperandActor.gen_uid(session_id, op_key)) \

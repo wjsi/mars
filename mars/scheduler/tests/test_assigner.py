@@ -17,15 +17,16 @@ import uuid
 
 import gevent
 
+from mars.actors import FunctionActor, create_actor_pool
 from mars.scheduler import ResourceActor, AssignerActor, ChunkMetaClient, \
     ChunkMetaActor, OperandActor
 from mars.scheduler.utils import SchedulerClusterInfoActor
-from mars.actors import FunctionActor, create_actor_pool
+from mars.tests.core import patch_method
 from mars.utils import get_next_port
 
 
 class MockOperandActor(FunctionActor):
-    def submit_to_worker(self, worker_ep, _data_sizes):
+    def submit_to_worker(self, worker_ep, _data_metas):
         self._worker_ep = worker_ep
 
     def get_worker_ep(self):
@@ -33,8 +34,9 @@ class MockOperandActor(FunctionActor):
 
 
 class Test(unittest.TestCase):
-
-    def testAssignerActor(self):
+    @patch_method(ResourceActor._broadcast_sessions)
+    @patch_method(ResourceActor._broadcast_workers)
+    def testAssignerActor(self, *_):
         mock_scheduler_addr = '127.0.0.1:%d' % get_next_port()
         with create_actor_pool(n_process=1, backend='gevent', address=mock_scheduler_addr) as pool:
             cluster_info_ref = pool.create_actor(SchedulerClusterInfoActor, [pool.cluster_info.address],
@@ -44,7 +46,7 @@ class Test(unittest.TestCase):
 
             endpoint1 = 'localhost:12345'
             endpoint2 = 'localhost:23456'
-            res = dict(hardware=dict(cpu=4, memory=4096))
+            res = dict(hardware=dict(cpu=4, cpu_total=4, memory=4096, memory_total=4096))
 
             def write_mock_meta():
                 resource_ref.set_worker_meta(endpoint1, res)

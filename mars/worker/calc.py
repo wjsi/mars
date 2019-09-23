@@ -59,14 +59,20 @@ class CpuCalcActor(WorkerActor):
         if not self.ctx.has_actor(self._events_ref):
             self._events_ref = None
 
-        store_uid = self.ctx.distributor.make_same_process(
-            ResultStoreActor.default_uid(), self.uid)
+        try:
+            store_uid = self.ctx.distributor.make_same_process(
+                ResultStoreActor.default_uid(), self.uid)
+        except AttributeError:
+            store_uid = ResultStoreActor.default_uid()
         self._result_store_ref = self.ctx.create_actor(ResultStoreActor, uid=store_uid)
 
         self._execution_pool = self.ctx.threadpool(1)
 
     def pre_destroy(self):
         self._result_store_ref.destroy()
+
+    def get_result_store_ref(self):
+        return self._result_store_ref
 
     @staticmethod
     def _get_keys_to_fetch(graph):

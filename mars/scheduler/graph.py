@@ -222,8 +222,6 @@ class GraphActor(SchedulerActor):
         self._state = state
         self._final_state = final_state
 
-        self._shallow_mode = False
-
         self._operand_free_paused = False
 
         self._cluster_info_ref = None
@@ -255,6 +253,8 @@ class GraphActor(SchedulerActor):
         self._worker_adds = set()
         self._worker_removes = set()
         self._lost_chunks = set()
+
+        self._schedule_args = dict()
 
         self._graph_analyze_pool = None
 
@@ -325,7 +325,7 @@ class GraphActor(SchedulerActor):
         self._graph_meta_ref.set_final_state(value, _tell=True, _wait=False)
 
     @log_unhandled
-    def execute_graph(self, compose=True):
+    def execute_graph(self, compose=True, schedule_args=None):
         """
         Start graph execution
         """
@@ -339,6 +339,7 @@ class GraphActor(SchedulerActor):
                     self.state = GraphState.CANCELLED
                 raise ExecutionInterrupted
 
+        self._schedule_args = schedule_args or dict()
         self._graph_meta_ref.set_graph_start(_tell=True, _wait=False)
         self.state = GraphState.PREPARING
 
@@ -633,7 +634,8 @@ class GraphActor(SchedulerActor):
         max_depth = max(depths.values())
 
         if max_depth < options.scheduler.shallow_mode_depth:
-            self._shallow_mode = True
+            self._schedule_args['shallow_mode'] = True
+        if self._schedule_args.get('shallow_mode'):
             logger.debug('Use shallow mode to run graph %s', self._graph_key)
 
         for k, v in analyzer.calc_descendant_sizes().items():
@@ -730,6 +732,7 @@ class GraphActor(SchedulerActor):
         op_refs = dict()
         meta_op_infos = dict()
         initial_keys = []
+        batch_submission_ops = []
         for op_key in self._op_key_to_chunk:
             chunks = self._op_key_to_chunk[op_key]
             op = chunks[0].op
@@ -744,7 +747,7 @@ class GraphActor(SchedulerActor):
             io_meta = self._collect_operand_io_meta(chunk_graph, chunks)
             op_info['op_name'] = meta_op_info['op_name'] = op_name
             op_info['io_meta'] = io_meta
-            op_info['shallow_mode'] = self._shallow_mode
+            op_info['schedule_args'] = self._schedule_args
             op_info['executable_dag'] = self.get_executable_operand_dag(op_key)
 
             if io_meta['predecessors']:
@@ -764,10 +767,15 @@ class GraphActor(SchedulerActor):
             op_uid = op_cls.gen_uid(session_id, op_key)
             scheduler_addr = self.get_scheduler(op_uid)
 
+            submit_initials = self._schedule_args.get('submit_initials', False) and \
+                op_info.get('is_initial', False)
+            if submit_initials:
+                batch_submission_ops.append(op_key)
+
             op_refs[op_key] = self.ctx.create_actor(
                 op_cls, session_id, self._graph_key, op_key, op_info.copy(),
                 with_kvstore=self._kv_store_ref is not None,
-                schedulers=self.get_schedulers(),
+                schedulers=self.get_schedulers(), submitted=submit_initials,
                 uid=op_uid, address=scheduler_addr, wait=False
             )
             if _clean_info:
@@ -803,10 +811,13 @@ class GraphActor(SchedulerActor):
                     del op_info['io_meta']
             [future.result() for future in append_futures]
 
-            res_applications = [(op_key, op_info) for op_key, op_info in operand_infos.items()
-                                if op_info.get('is_initial', False)]
-            self._assigner_actor_ref.apply_for_multiple_resources(
-                session_id, res_applications, _tell=True)
+            res_applications = [(op_key, operand_infos[op_key]) for op_key in batch_submission_ops]
+            if self._schedule_args.get('submit_initials') and res_applications:
+                self._assigner_actor_ref.apply_for_multiple_resources(
+                    session_id, res_applications, _tell=True)
+            elif not self._schedule_args.get('submit_initials'):
+                for ref in op_refs.values():
+                    ref.start_operand(_tell=True, _wait=False)
 
     @log_unhandled
     def add_finished_terminal(self, op_key, final_state=None):

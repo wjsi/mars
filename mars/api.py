@@ -95,11 +95,12 @@ class MarsAPI(object):
         return self.session_manager.has_session(session_id)
 
     def submit_graph(self, session_id, serialized_graph, graph_key, target,
-                     compose=True, wait=True):
+                     compose=True, schedule_args=None, wait=True):
         session_uid = SessionActor.gen_uid(session_id)
         session_ref = self.get_actor_ref(session_uid)
         session_ref.submit_tileable_graph(
-            serialized_graph, graph_key, target, compose=compose, _tell=not wait)
+            serialized_graph, graph_key, target, compose=compose,
+            schedule_args=schedule_args, _tell=not wait)
 
     def create_mutable_tensor(self, session_id, name, shape, dtype, *args, **kwargs):
         session_uid = SessionActor.gen_uid(session_id)
