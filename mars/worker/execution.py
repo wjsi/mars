@@ -412,7 +412,7 @@ class ExecutionActor(WorkerActor):
         record = self._graph_records[(session_id, key)]
         record.state = state
         if self._status_ref:
-            self._status_ref.update_progress(session_id, key, record.op_string, state.name,
+            self._status_ref.update_progress(session_id, key, record.op_string, state,
                                              _tell=True, _wait=False)
 
     @promise.reject_on_exception

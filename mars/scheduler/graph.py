@@ -695,7 +695,7 @@ class GraphActor(SchedulerActor):
         successor_keys = set()
         input_chunk_keys = set()
         shared_input_chunk_keys = set()
-        chunk_keys = set()
+        chunk_sizes = dict()
         shuffle_keys = dict()
 
         for c in chunks:
@@ -713,14 +713,21 @@ class GraphActor(SchedulerActor):
                 for sn in graph.iter_successors(c):
                     shuffle_keys[sn.op.key] = get_chunk_shuffle_key(sn)
 
-            chunk_keys.update(co.key for co in c.op.outputs)
+            for co in c.op.outputs:
+                chunk_sizes[co.key] = getattr(co, 'nbytes', None)
+
+        if any(not v for v in chunk_sizes.values()):
+            total_output_size = None
+        else:
+            total_output_size = sum(chunk_sizes.values())
 
         io_meta = dict(
             predecessors=list(predecessor_keys),
             successors=list(successor_keys),
             input_chunks=list(input_chunk_keys),
             shared_input_chunks=list(shared_input_chunk_keys),
-            chunks=list(chunk_keys),
+            chunks=list(chunk_sizes.keys()),
+            total_output_size=total_output_size,
         )
         if shuffle_keys:
             io_meta['shuffle_keys'] = [shuffle_keys.get(k) for k in io_meta['successors']]

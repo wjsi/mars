@@ -315,7 +315,6 @@ default_options.register_option('tensor.rechunk.chunk_size_limit', int(1e8), val
 # Scheduler
 default_options.register_option('scheduler.assign_chunk_workers', False, validator=is_bool, serialize=True)
 default_options.register_option('scheduler.enable_active_push', True, validator=is_bool, serialize=True)
-default_options.register_option('scheduler.enable_chunk_relocation', False, validator=is_bool, serialize=True)
 default_options.register_option('scheduler.check_interval', 1, validator=is_integer, serialize=True)
 default_options.register_option('scheduler.default_cpu_usage', 1, validator=(is_integer, is_float), serialize=True)
 default_options.register_option('scheduler.default_cuda_usage', 1, validator=(is_integer, is_float), serialize=True)
@@ -323,6 +322,11 @@ default_options.register_option('scheduler.execution_timeout', 600, validator=is
 default_options.register_option('scheduler.retry_num', 4, validator=is_integer, serialize=True)
 default_options.register_option('scheduler.fetch_limit', 10 * 1024 ** 2, validator=is_integer, serialize=True)
 default_options.register_option('scheduler.retry_delay', 60, validator=is_integer, serialize=True)
+
+default_options.register_option('scheduler.enable_worker_steal', False, validator=is_bool, serialize=True)
+default_options.register_option('scheduler.steal_min_data_count', 10, validator=is_integer, serialize=True)
+default_options.register_option('scheduler.stealer_idle_time', 10, validator=is_integer, serialize=True)
+default_options.register_option('scheduler.stealable_threshold', 10, validator=is_integer, serialize=True)
 
 default_options.register_option('scheduler.dump_graph_data', False, validator=is_bool)
 

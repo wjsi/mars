@@ -22,6 +22,7 @@ import time
 from collections import defaultdict
 
 from .. import promise
+from ..compat import PY27
 from ..config import options
 from ..errors import DependencyMissing
 from ..utils import log_unhandled
@@ -33,18 +34,23 @@ logger = logging.getLogger(__name__)
 
 
 class ChunkPriorityItem(object):
+    __slots__ = '_op_key', '_session_id', '_op_info', '_target_worker', '_callback', '_priority'
+
     """
     Class providing an order for operands for assignment
     """
-    def __init__(self, session_id, op_key, op_info, callback):
+    def __init__(self, session_id, op_key, op_info, callback, priority=None):
         self._op_key = op_key
         self._session_id = session_id
         self._op_info = op_info
         self._target_worker = op_info.get('target_worker')
         self._callback = callback
 
-        self._priority = ()
-        self.update_priority(op_info['optimize'])
+        if priority:
+            self._priority = priority
+        else:
+            self._priority = ()
+            self.update_priority(op_info['optimize'])
 
     def update_priority(self, priority_data, copyobj=False):
         obj = self
@@ -86,11 +92,35 @@ class ChunkPriorityItem(object):
     def op_info(self):
         return self._op_info
 
+    if PY27:
+        def __reduce__(self):
+            return type(self), (self._session_id, self._op_key, self._op_info, self._callback,
+                                self._priority)
+
     def __repr__(self):
         return '<ChunkPriorityItem(%s(%s))>' % (self.op_key, self.op_info['op_name'])
 
     def __lt__(self, other):
         return self._priority > other._priority
+
+
+class ReversedHeapItem(ChunkPriorityItem):
+    def __init__(self, *args, **kwargs):
+        if isinstance(args[0], ChunkPriorityItem):
+            for k in self.__slots__:
+                try:
+                    setattr(self, k, getattr(args[0], k))
+                except AttributeError:
+                    pass
+        else:
+            super(ReversedHeapItem, self).__init__(*args, **kwargs)
+
+    def __lt__(self, other):
+        return self._priority < other._priority
+
+
+class NotStealableError(Exception):
+    pass
 
 
 class AssignerActor(SchedulerActor):
@@ -106,6 +136,7 @@ class AssignerActor(SchedulerActor):
         super(AssignerActor, self).__init__()
         self._requests = dict()
         self._req_heap = []
+        self._steal_heap = []
 
         self._cluster_info_ref = None
         self._actual_ref = None
@@ -115,6 +146,10 @@ class AssignerActor(SchedulerActor):
         # since worker metrics does not change frequently, we update it
         # only when it is out of date
         self._worker_metric_time = 0
+        self._stealer_workers = set()
+
+        self._avg_net_speed = 0
+        self._avg_calc_speeds = dict()
 
     def post_create(self):
         logger.debug('Actor %s running in process %d', self.uid, os.getpid())
@@ -144,6 +179,55 @@ class AssignerActor(SchedulerActor):
             self._worker_metrics = self._resource_ref.get_workers_meta()
             self._worker_metric_time = t
 
+            # collect stealers
+            for ep, metric in self._worker_metrics.items():
+                if metric.get('last_busy_time', t) < t - options.scheduler.stealer_idle_time:
+                    self._stealer_workers.add(ep)
+                else:
+                    self._stealer_workers.difference_update([ep])
+
+            # calc average transfer speed
+            min_stats = options.scheduler.steal_min_data_count
+            total_speed, total_count = 0, 0
+            for ep in self._worker_metrics:
+                net_speed_stats = self._worker_metrics[ep].get('stats', {}).get('net_transfer_speed', {})
+                ep_count = net_speed_stats.get('count', 0)
+                total_speed += net_speed_stats.get('mean', 0)
+                total_count += ep_count
+
+            if total_count >= min_stats:
+                self._avg_net_speed = total_speed / len(self._worker_metrics)
+
+            # calc average calc speed
+            collected_ops = set()
+            for ep in self._worker_metrics:
+                for stat_key, calc_stats in self._worker_metrics[ep].get('stats', {}).items():
+                    if stat_key.startswith('calc_speed.'):
+                        collected_ops.add(stat_key.split('.', 1)[-1])
+            for op_name in collected_ops:
+                total_speed, total_count = 0, 0
+                for ep in self._worker_metrics:
+                    calc_stats = self._worker_metrics[ep].get('stats', {}).get('calc_speed.' + op_name, {})
+                    ep_count = calc_stats.get('count', 0)
+                    total_speed += calc_stats.get('mean', 0)
+                    total_count += ep_count
+
+                if total_count < min_stats:
+                    continue
+                self._avg_calc_speeds[op_name] = total_speed / total_count
+
+            self._actual_ref.update_steal_data(
+                self._stealer_workers, self._avg_net_speed, self._avg_calc_speeds, _tell=True, _wait=False)
+
+    def _is_op_roughly_stealable(self, op_info):
+        op_name = op_info['op_name']
+        if not options.scheduler.enable_worker_steal or not op_name or op_name not in self._avg_calc_speeds:
+            return False
+        total_data_count = len(op_info['io_meta']['predecessors']) + len(op_info['io_meta']['successors'])
+        scaled_speed = self._avg_net_speed / total_data_count * options.scheduler.stealable_threshold
+        if scaled_speed < self._avg_calc_speeds[op_name]:
+            return True
+
     def filter_alive_workers(self, workers, refresh=False):
         if refresh:
             self._refresh_worker_metrics()
@@ -155,6 +239,8 @@ class AssignerActor(SchedulerActor):
             priority_item.target_worker = None
         self._requests[op_key] = priority_item
         heapq.heappush(self._req_heap, priority_item)
+        if self._stealer_workers and self._is_op_roughly_stealable(op_info):
+            heapq.heappush(self._steal_heap, ReversedHeapItem(priority_item))
 
     @promise.reject_on_exception
     @log_unhandled
@@ -192,6 +278,8 @@ class AssignerActor(SchedulerActor):
             return
         obj = self._requests[op_key].update_priority(priority_data, copyobj=True)
         heapq.heappush(self._req_heap, obj)
+        if self._stealer_workers and self._is_op_roughly_stealable(obj.op_info):
+            heapq.heappush(self._steal_heap, ReversedHeapItem(obj))
 
     @log_unhandled
     def remove_apply(self, op_key):
@@ -202,14 +290,10 @@ class AssignerActor(SchedulerActor):
         if op_key in self._requests:
             del self._requests[op_key]
 
-    def pop_head(self):
-        """
-        Pop and obtain top-priority request from queue
-        :return: top item
-        """
+    def _pop_heap_item(self, h):
         item = None
-        while self._req_heap:
-            item = heapq.heappop(self._req_heap)
+        while h:
+            item = heapq.heappop(h)
             if item.op_key in self._requests:
                 # use latest request item
                 item = self._requests[item.op_key]
@@ -218,7 +302,25 @@ class AssignerActor(SchedulerActor):
                 item = None
         return item
 
-    def extend(self, items):
+    def pop_head_request(self):
+        """
+        Pop and obtain top-priority request from queue
+        :return: top item
+        """
+        return self._pop_heap_item(self._req_heap)
+
+    def pop_head_steal(self):
+        return self._pop_heap_item(self._steal_heap)
+
+    def extend_requests(self, items):
+        """
+        Extend heap by an iterable object. The heap will be reheapified.
+        :param items: priority items
+        """
+        self._req_heap.extend(items)
+        heapq.heapify(self._req_heap)
+
+    def extend_steal(self, items):
         """
         Extend heap by an iterable object. The heap will be reheapified.
         :param items: priority items
@@ -244,8 +346,10 @@ class AssignEvaluationActor(SchedulerActor):
         self._assigner_ref = assigner_ref
         self._resource_ref = None
 
-        self._sufficient_operands = set()
-        self._operand_sufficient_time = dict()
+        self._stealer_workers = set()
+
+        self._avg_net_speed = 0
+        self._avg_calc_speeds = dict()
 
     def post_create(self):
         logger.debug('Actor %s running in process %d', self.uid, os.getpid())
@@ -264,6 +368,11 @@ class AssignEvaluationActor(SchedulerActor):
         self.allocate_top_resources()
         self.ref().periodical_allocate(_tell=True, _delay=0.5)
 
+    def update_steal_data(self, stealers, avg_net_speed, avg_calc_speeds):
+        self._stealer_workers = stealers
+        self._avg_net_speed = avg_net_speed
+        self._avg_calc_speeds = avg_calc_speeds
+
     def allocate_top_resources(self):
         """
         Allocate resources given the order in AssignerActor
@@ -277,17 +386,18 @@ class AssignEvaluationActor(SchedulerActor):
             return
 
         unassigned = []
-        reject_workers = set()
+        reject_alloc_workers = set()
+        meta_cache = dict()
         # the assigning procedure will continue till
-        while len(reject_workers) < len(self._worker_metrics):
-            item = self._assigner_ref.pop_head()
+        while len(reject_alloc_workers) < len(self._worker_metrics) - len(self._stealer_workers):
+            item = self._assigner_ref.pop_head_request()
             if not item:
                 break
-
             try:
                 alloc_ep, rejects = self._allocate_resource(
                     item.session_id, item.op_key, item.op_info, item.target_worker,
-                    reject_workers=reject_workers)
+                    reject_workers=reject_alloc_workers, meta_cache=meta_cache,
+                    use_worker_stats=False)
             except:  # noqa: E722
                 logger.exception('Unexpected error occurred in %s', self.uid)
                 if item.callback:  # pragma: no branch
@@ -295,7 +405,7 @@ class AssignEvaluationActor(SchedulerActor):
                 continue
 
             # collect workers failed to assign operand to
-            reject_workers.update(rejects)
+            reject_alloc_workers.update(rejects)
             if alloc_ep:
                 # assign successfully, we remove the application
                 self._assigner_ref.remove_apply(item.op_key)
@@ -304,10 +414,45 @@ class AssignEvaluationActor(SchedulerActor):
                 unassigned.append(item)
         if unassigned:
             # put unassigned back to the queue, if any
-            self._assigner_ref.extend(unassigned)
+            self._assigner_ref.extend_requests(unassigned)
+
+        unassigned = []
+        reject_steal_workers = set()
+        while len(reject_steal_workers) < len(self._stealer_workers):
+            item = self._assigner_ref.pop_head_steal()
+            if not item:
+                break
+            try:
+                alloc_ep, rejects = self._allocate_resource(
+                    item.session_id, item.op_key, item.op_info, item.target_worker,
+                    reject_workers=reject_alloc_workers, meta_cache=meta_cache,
+                    use_worker_stats=True)
+            except NotStealableError:
+                # do nothing
+                continue
+            except:  # noqa: E722
+                logger.exception('Unexpected error occurred in %s', self.uid)
+                if item.callback:  # pragma: no branch
+                    self.tell_promise(item.callback, *sys.exc_info(), **dict(_accept=False))
+                continue
+
+            # collect workers failed to assign operand to
+            reject_steal_workers.update(rejects)
+            if alloc_ep:
+                # assign successfully, we remove the application
+                logger.debug('Operand %s stolen in %s', item.op_key, alloc_ep)
+                self._assigner_ref.remove_apply(item.op_key)
+            else:
+                # put the unassigned item into unassigned list to add back to the queue later
+                unassigned.append(item)
+
+        if unassigned:
+            # put unassigned back to the queue, if any
+            self._assigner_ref.extend_steal(unassigned)
 
     @log_unhandled
-    def _allocate_resource(self, session_id, op_key, op_info, target_worker=None, reject_workers=None):
+    def _allocate_resource(self, session_id, op_key, op_info, target_worker=None, reject_workers=None,
+                           use_worker_stats=False, meta_cache=None):
         """
         Allocate resource for single operand
         :param session_id: session id
@@ -329,7 +474,7 @@ class AssignEvaluationActor(SchedulerActor):
         except KeyError:
             input_data_keys = op_io_meta.get('input_chunks', {})
 
-            input_metas = self._get_chunks_meta(session_id, input_data_keys)
+            input_metas = self._get_chunks_meta(session_id, input_data_keys, meta_cache)
             if any(m is None for m in input_metas.values()):
                 raise DependencyMissing('Dependency missing for operand %s' % op_key)
 
@@ -337,7 +482,14 @@ class AssignEvaluationActor(SchedulerActor):
 
         if target_worker is None:
             who_has = dict((k, meta.workers) for k, meta in input_metas.items())
-            candidate_workers = self._get_eps_by_worker_locality(input_data_keys, who_has, input_sizes)
+            if use_worker_stats:
+                output_size = op_io_meta['total_output_size'] or sum(input_sizes.values())
+                candidate_workers = self._get_eps_by_worker_stats(
+                    input_data_keys, who_has, input_sizes, output_size, op_info['op_name'])
+                if candidate_workers is None:
+                    raise NotStealableError
+            else:
+                candidate_workers = self._get_eps_by_worker_locality(input_data_keys, who_has, input_sizes)
         else:
             candidate_workers = [target_worker]
 
@@ -365,10 +517,18 @@ class AssignEvaluationActor(SchedulerActor):
             rejects.append(worker_ep)
         return None, rejects
 
-    def _get_chunks_meta(self, session_id, keys):
+    def _get_chunks_meta(self, session_id, keys, meta_cache=None):
         if not keys:
             return dict()
-        return dict(zip(keys, self.chunk_meta.batch_get_chunk_meta(session_id, keys)))
+        result = dict()
+        miss_keys = []
+        for k in keys:
+            try:
+                result[k] = meta_cache[k]
+            except KeyError:
+                miss_keys.append(k)
+        result.update(zip(miss_keys, self.chunk_meta.batch_get_chunk_meta(session_id, miss_keys)))
+        return result
 
     def _get_eps_by_worker_locality(self, input_keys, chunk_workers, input_sizes):
         locality_data = defaultdict(lambda: 0)
@@ -387,3 +547,29 @@ class AssignEvaluationActor(SchedulerActor):
             elif locality_data[ep] == max_locality:
                 max_eps.append(ep)
         return max_eps
+
+    def _get_eps_by_worker_stats(self, input_keys, who_has, input_sizes, output_size, op_name):
+        ep_transmit_times = defaultdict(list)
+        for key in input_keys:
+            contain_eps = who_has.get(key, set())
+            for ep in self._stealer_workers:
+                if ep not in contain_eps:
+                    ep_transmit_times[ep].append(input_sizes[key] * 1.0 / self._avg_net_speed)
+
+        min_data_count = options.scheduler.steal_min_data_count
+        threshold_ratio = options.scheduler.stealable_threshold
+        ep_total_time = dict()
+        for ep in self._worker_metrics:
+            calc_stats = self._worker_metrics[ep].get('stats', {}).get('calc_speed.' + op_name, {})
+            if calc_stats['count'] < min_data_count:
+                calc_speed = self._avg_calc_speeds[op_name]
+            else:
+                calc_speed = calc_stats['mean']
+            transfer_time = sum(ep_transmit_times[ep] or ()) + output_size / self._avg_net_speed
+            calc_time = output_size / calc_speed
+            if calc_time < threshold_ratio * transfer_time:
+                return None
+            ep_total_time[ep] = sum(ep_transmit_times[ep] or ()) + output_size / self._avg_net_speed \
+                + output_size / calc_speed
+        sort_items = sorted([(t, ep) for ep, t in ep_total_time.items()])
+        return [item[-1] for item in sort_items if item[0] == sort_items[0][0]] if sort_items else []

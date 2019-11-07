@@ -33,6 +33,7 @@ class StatusReporterActor(WorkerActor):
         self._endpoint = endpoint
 
         self._upload_status = False
+        self._last_busy_time = time.time()
 
         self._status_ref = None
         self._resource_ref = None
@@ -149,7 +150,11 @@ class StatusReporterActor(WorkerActor):
             for k, v in six.iteritems(slots_data):
                 meta_dict['slots'][k] = v
 
-            meta_dict['progress'] = self._status_ref.get_progress()
+            meta_dict['progress'] = progresses = self._status_ref.get_progress()
+            meta_dict['total_runnings'] = total_runnings = sum(len(v) for v in progresses.values())
+            if total_runnings > 0:
+                self._last_busy_time = time.time()
+            meta_dict['last_busy_time'] = self._last_busy_time
             meta_dict['details'] = gather_node_info()
 
             self._resource_ref.set_worker_meta(self._endpoint, meta_dict)
@@ -201,13 +206,13 @@ class StatusActor(WorkerActor):
     def get_progress(self):
         return copy.deepcopy(self._progress)
 
-    def update_progress(self, session_id, graph_key, ops, stage):
+    def update_progress(self, session_id, graph_key, ops, state):
         """
         Update statuses of operands
         :param session_id: session id
         :param graph_key: graph key
         :param ops: operand name
-        :param stage: operand stage
+        :param state: operand stage
         """
         session_id = str(session_id)
         graph_key = str(graph_key)
@@ -220,7 +225,7 @@ class StatusActor(WorkerActor):
             graph_dict = session_dict[graph_key]
         except KeyError:
             graph_dict = session_dict[graph_key] = dict()
-        graph_dict.update(dict(operands=ops, stage=stage))
+        graph_dict.update(dict(operands=ops, stage=state.name))
 
     def remove_progress(self, session_id, graph_key):
         try:
