@@ -13,46 +13,9 @@
 # limitations under the License.
 
 import contextlib
-from enum import Enum
 
 from ...actors import ActorNotExist
 from ...errors import WorkerDead
-from ...utils import classproperty
-
-
-class OperandState(Enum):
-    __order__ = 'UNSCHEDULED READY RUNNING FINISHED CACHED FREED FATAL CANCELLING CANCELLED'
-
-    UNSCHEDULED = 'unscheduled'
-    READY = 'ready'
-    RUNNING = 'running'
-    FINISHED = 'finished'
-    CACHED = 'cached'
-    FREED = 'freed'
-    FATAL = 'fatal'
-    CANCELLING = 'cancelling'
-    CANCELLED = 'cancelled'
-
-    @classproperty
-    def STORED_STATES(self):
-        """
-        States on which the data of the operand is stored
-        """
-        return self.FINISHED, self.CACHED
-
-    @classproperty
-    def SUCCESSFUL_STATES(self):
-        """
-        States on which the operand is executed successfully
-        """
-        return self.FINISHED, self.CACHED, self.FREED
-
-    @classproperty
-    def TERMINATED_STATES(self):
-        """
-        States on which the operand has already terminated
-        """
-        return self.FINISHED, self.CACHED, self.FREED, self.FATAL, self.CANCELLED
 
 
 @contextlib.contextmanager

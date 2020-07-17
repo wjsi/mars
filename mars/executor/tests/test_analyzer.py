@@ -17,8 +17,8 @@ import unittest
 import numpy as np
 
 import mars.tensor as mt
-from mars.scheduler import OperandState
-from mars.scheduler.analyzer import GraphAnalyzer
+from mars.executor import OperandState
+from mars.executor.analyzer import GraphAnalyzer
 from mars.scheduler.chunkmeta import WorkerMeta
 from mars.graph import DAG
 

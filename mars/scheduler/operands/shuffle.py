@@ -15,10 +15,11 @@
 import logging
 from collections import defaultdict
 
+from ...executor import OperandState
 from ...operands import ShuffleProxy
 from ...errors import WorkerDead
 from .base import BaseOperandActor
-from .core import register_operand_class, rewrite_worker_errors, OperandState
+from .core import register_operand_class, rewrite_worker_errors
 
 logger = logging.getLogger(__name__)
 

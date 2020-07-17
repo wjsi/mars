@@ -18,11 +18,12 @@ import time
 
 from ...config import options
 from ...errors import ExecutionInterrupted, DependencyMissing, WorkerDead
+from ...executor import OperandState
 from ...operands import Operand
 from ...utils import log_unhandled, insert_reversed_tuple
 from ..utils import GraphState, array_to_bytes
 from .base import BaseOperandActor
-from .core import OperandState, register_operand_class, rewrite_worker_errors
+from .core import register_operand_class, rewrite_worker_errors
 
 logger = logging.getLogger(__name__)
 

@@ -21,7 +21,7 @@ from functools import reduce
 import numpy as np
 
 from ..operands import VirtualOperand
-from .operands import OperandState
+from .core import OperandState
 
 logger = logging.getLogger(__name__)
 

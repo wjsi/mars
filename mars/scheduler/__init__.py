@@ -14,7 +14,7 @@
 
 from .chunkmeta import ChunkMetaActor, ChunkMetaClient
 from .graph import GraphActor, GraphMetaActor
-from .operands import OperandActor, OperandState
+from .operands import OperandActor
 from .assigner import AssignerActor, AssignEvaluationActor
 from .resource import ResourceActor
 from .session import SessionActor, SessionManagerActor

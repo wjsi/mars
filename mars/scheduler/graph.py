@@ -25,16 +25,10 @@ from functools import lru_cache, reduce
 
 import numpy as np
 
-from .analyzer import GraphAnalyzer
-from .assigner import AssignerActor
-from .kvstore import KVStoreActor
-from .operands import get_operand_actor_class, OperandState
-from .resource import ResourceActor
-from .session import SessionActor
-from .utils import SchedulerActor, GraphState
 from ..actors.errors import ActorAlreadyExist
 from ..config import options
 from ..errors import ExecutionInterrupted, GraphNotExists, WorkerDead
+from ..executor import GraphAnalyzer, OperandState
 from ..graph import DAG
 from ..operands import Fetch, ShuffleProxy, VirtualOperand, SuccessorsExclusive
 from ..serialize import dataserializer
@@ -44,6 +38,12 @@ from ..utils import serialize_graph, deserialize_graph, log_unhandled, \
     build_exc_info, build_fetch_chunk, build_fetch_tileable, calc_nsplits, \
     get_chunk_shuffle_key, enter_mode, has_unknown_shape
 from ..context import DistributedContext
+from .assigner import AssignerActor
+from .kvstore import KVStoreActor
+from .operands import get_operand_actor_class
+from .resource import ResourceActor
+from .session import SessionActor
+from .utils import SchedulerActor, GraphState
 
 logger = logging.getLogger(__name__)
 

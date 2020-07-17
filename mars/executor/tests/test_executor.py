@@ -19,12 +19,12 @@ import unittest
 import numpy as np
 
 import mars.tensor as mt
-from mars.executor import Executor, register, GraphDeviceAssigner, EventQueue
+from mars.executor import Executor, register, EventQueue
 from mars.serialize import Int64Field
 from mars.tensor.operands import TensorOperand, TensorOperandMixin
 from mars.graph import DirectedGraph
 from mars.actors import Distributor, Actor
-from mars.tiles import get_tiled
+from mars.executor.core import SyncProviderType
 from mars.tests.core import create_actor_pool
 
 
@@ -40,7 +40,7 @@ class RunActor(Actor):
 
 class ExecutorActor(Actor):
     def __init__(self):
-        self._executor = Executor(sync_provider_type=Executor.SyncProviderType.GEVENT)
+        self._executor = Executor(sync_provider_type=SyncProviderType.GEVENT)
 
     def post_create(self):
         register(FakeOperand, fake_execution_maker(self.ctx))
@@ -76,7 +76,7 @@ def fake_execution_maker(actor_ctx):
 
 class Test(unittest.TestCase):
     def testExecutorWithGeventProvider(self):
-        executor = Executor(sync_provider_type=Executor.SyncProviderType.GEVENT)
+        executor = Executor(sync_provider_type=SyncProviderType.GEVENT)
 
         a = mt.ones((10, 10), chunk_size=2)
         res = executor.execute_tensor(a, concat=True)[0]
@@ -167,21 +167,6 @@ class Test(unittest.TestCase):
         executor = Executor()
         res = executor.execute_graph(graph, keys=[chunk.key])[0]
         np.testing.assert_array_equal(res, fake_result)
-
-    def testGraphDeviceAssigner(self):
-        import mars.tensor as mt
-
-        a = mt.random.rand(10, 10, chunk_size=5, gpu=True)
-        b = a.sum(axis=1)
-        graph = b.build_graph(tiled=True, compose=False)
-
-        assigner = GraphDeviceAssigner(graph, list(n.op for n in graph.iter_indep()), devices=[0, 1])
-        assigner.assign()
-
-        a = get_tiled(a)
-        self.assertEqual(a.cix[0, 0].device, a.cix[0, 1].device)
-        self.assertEqual(a.cix[1, 0].device, a.cix[1, 1].device)
-        self.assertNotEqual(a.cix[0, 0].device, a.cix[1, 0].device)
 
     def testEventQueue(self):
         q = EventQueue(threading.Event)

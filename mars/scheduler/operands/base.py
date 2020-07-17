@@ -16,8 +16,9 @@ import logging
 from collections import defaultdict
 
 from ...errors import WorkerDead
+from ...executor import OperandState
 from ..utils import SchedulerActor
-from .core import OperandState, rewrite_worker_errors
+from .core import rewrite_worker_errors
 
 logger = logging.getLogger(__name__)
 
