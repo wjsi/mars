@@ -24,7 +24,7 @@ import mars.dataframe as md
 from mars.core import ExecutableTuple
 from mars.config import option_context
 from mars.dataframe.datasource.read_csv import DataFrameReadCSV
-from mars.executor import register, Executor
+from mars.executor import register, LocalChunkGraphExecutor
 from mars.tests.core import TestBase, ExecutorForTest
 from mars.optimizes.tileable_graph.core import tileable_optimized
 
@@ -166,4 +166,4 @@ class Test(TestBase):
                 pd.testing.assert_frame_equal(df2.fetch(), expected)
                 pd.testing.assert_frame_equal(df2.iloc[:3].fetch(), expected.iloc[:3])
             finally:
-                del Executor._op_runners[DataFrameReadCSV]
+                del LocalChunkGraphExecutor._op_runners[DataFrameReadCSV]

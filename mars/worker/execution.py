@@ -519,11 +519,7 @@ class ExecutionActor(WorkerActor):
         logger.debug('Worker graph %s(%s) targeting at %r accepted.', graph_key,
                      long_op_string, graph_record.chunk_targets)
         self._update_state(session_id, graph_key, ExecutionState.ALLOCATING)
-
-        try:
-            del self._result_cache[session_graph_key]
-        except KeyError:
-            pass
+        self._result_cache.pop(session_graph_key, None)
 
         @log_unhandled
         def _handle_success(*_):

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
 import itertools
 import logging
 import sys
@@ -40,10 +39,10 @@ from .utils import enter_mode, build_fetch, calc_nsplits, has_unknown_shape, pru
 try:
     from numpy.core._exceptions import UFuncTypeError
 except ImportError:  # pragma: no cover
-    UFuncTypeError = None
+    UFuncTypeError = type('UFuncTypeError', (Exception,), {})
 
 try:
-    import gevent
+    import gevent.event
 except ImportError:  # pragma: no cover
     gevent = None
 
@@ -168,7 +167,8 @@ class GeventExecutorSyncProvider(ExecutorSyncProvider):
     @classmethod
     def event(cls):
         # as gevent threadpool is the **real** thread, so use threading.Event
-        return threading.Event()
+        import gevent.event
+        return gevent.event.Event()
 
     @classmethod
     def queue(cls, *args, **kwargs):
@@ -189,6 +189,9 @@ class MockThreadPoolExecutor(object):
 
         def exception_info(self, *_):
             return self._exc_info
+
+        def add_done_callback(self, callback):
+            callback(self)
 
     def __init__(self, *_):
         pass
@@ -330,49 +333,64 @@ class GraphDeviceAssigner(object):
                     chunk.op._device = v
 
 
-class GraphExecution:
-    """
-    Represent an execution for a specified graph.
-    """
+class GraphListener:
+    def __init__(self, op_keys, sync_provider=None):
+        self._op_keys = set(op_keys)
+        self._finished_keys = set()
+        self._sync_provider = sync_provider
+        self._event = sync_provider.event()
+        self._exc_info = None
 
-    def __init__(self, chunk_results, graph, keys, executed_keys, sync_provider,
-                 n_parallel=None, engine=None, prefetch=False, print_progress=False,
-                 mock=False, mock_max_memory=0, fetch_keys=None, no_intermediate=False):
-        self._chunk_results = chunk_results
-        self._graph = graph
-        self._keys = keys
-        self._key_set = set(keys).union(executed_keys)
-        self._n_parallel = n_parallel or 1
+        if not self._op_keys:
+            self._event.set()
+
+    def finish_operand(self, op_key, exc_info=None):
+        self._finished_keys.add(op_key)
+        self._exc_info = self._exc_info or exc_info
+        if exc_info is not None or self._finished_keys == self._op_keys:
+            self._event.set()
+
+    def wait(self, timeout=None):
+        aux_event = None
+        if type(self._event).__module__.startswith('gevent'):
+            aux_event = gevent.event.Event()
+
+            def _branch_coro():
+                delay = 0.0005
+                while not aux_event.is_set():
+                    aux_event.wait(timeout=delay)
+                    delay = min(delay * 2, 0.05)
+
+            gevent.spawn(_branch_coro)
+
+        try:
+            if not self._event.wait(timeout):
+                raise TimeoutError
+        finally:
+            if aux_event is not None:
+                aux_event.set()
+
+        if self._exc_info is not None:
+            raise self._exc_info[1].with_traceback(self._exc_info[2]) from None
+
+
+class ChunkGraphExecutor:
+    def __init__(self, sync_provider, engine=None):
+        self._graph = DAG()
+        self._target_chunk_keys = set()
         self._engine = engine
-        self._prefetch = prefetch
-        self._print_progress = print_progress
-        self._mock = mock
-        self._mock_max_memory = mock_max_memory
-        self._no_intermediate = no_intermediate
-        self._fetch_keys = fetch_keys or set()
 
-        # pool executor for the operand execution
-        self._operand_executor = sync_provider.thread_pool_executor(self._n_parallel)
-        # pool executor for prefetching
-        if prefetch:
-            self._prefetch_executor = sync_provider.thread_pool_executor(self._n_parallel)
-        else:
-            self._prefetch_executor = None
-        # global lock
-        self._lock = sync_provider.lock()
-        # control the concurrence
-        self._semaphore = sync_provider.semaphore(self._n_parallel)
-        # event for setting error happened
-        self._has_error = sync_provider.event()
-        self._queue = sync_provider.queue(self._order_starts()) \
-            if len(graph) > 0 else sync_provider.queue()
-        self._chunk_key_ref_counts = self._calc_ref_counts()
-        self._op_key_to_ops = self._calc_op_key_to_ops()
+        self._chunk_key_ref_counts = dict()
+        self._op_key_listeners = defaultdict(list)
+
+        self._sync_provider = sync_provider
+        self._lock = sync_provider.rlock()
+        self._op_key_to_ops = dict()
         self._submitted_op_keys = set()
-        self._add_queue_op_keys = {op.key for op in self._queue}
         self._executed_op_keys = set()
-        # initial assignment for GPU
-        self._assign_devices()
+        self._cancelled_op_keys = set()
+
+        self._exc_info = None
 
     def handle_op(self, *args, **kw):
         return Executor.handle(*args, **kw)
@@ -381,6 +399,9 @@ class GraphExecution:
         visited = set()
         op_keys = set()
         starts = deque(self._graph.iter_indep())
+        if not starts:
+            return
+
         stack = deque([starts.popleft()])
 
         while stack:
@@ -402,185 +423,246 @@ class GraphExecution:
             if not stack and starts:
                 stack.appendleft(starts.popleft())
 
-    def _assign_devices(self):
-        if self._n_parallel <= 1 or self._engine != 'cupy':
-            return
-
-        devices = list(range(self._n_parallel))
-        assigner = GraphDeviceAssigner(self._graph, self._queue, devices)
-        assigner.assign()
-
     def _calc_ref_counts(self):
-        ref_counts = dict()
-
         for chunk in self._graph:
             for dep_key in chunk.op.get_dependent_data_keys():
-                if dep_key in self._key_set:
+                if dep_key in self._target_chunk_keys:
                     # only record ref count for those not in results
                     continue
-                ref_counts[dep_key] = ref_counts.get(dep_key, 0) + 1
-
-        return ref_counts
+                self._chunk_key_ref_counts[dep_key] = self._chunk_key_ref_counts.get(dep_key, 0) + 1
 
     def _calc_op_key_to_ops(self):
         op_key_to_ops = defaultdict(set)
 
         for chunk in self._graph:
-            # operand
             op_key_to_ops[chunk.op.key].add(chunk.op)
 
         return op_key_to_ops
 
-    @enter_mode(kernel=True)
-    def _execute_operand(self, op):
-        results = self._chunk_results
-        ref_counts = self._chunk_key_ref_counts
-        op_keys = self._executed_op_keys
-        executed_chunk_keys = set()
-        deleted_chunk_keys = set()
-        try:
-            ops = list(self._op_key_to_ops[op.key])
-            # note that currently execution is the chunk-level
-            # so we pass the first operand's first output to Executor.handle
-            first_op = ops[0]
-            self.handle_op(first_op, results, self._mock)
+    def _notify_op_listeners(self, op_key, exc_info=None):
+        for listener in self._op_key_listeners.get(op_key, []):
+            listener.finish_operand(op_key, exc_info=exc_info)
 
-            # update maximal memory usage during execution
-            if self._mock:
-                output_keys = set(o.key for o in first_op.outputs or ())
+    def submit_chunk_graph(self, graph, chunk_keys=None):
+        if len(self._graph) == 0:
+            graph.copyto(self._graph)
+        else:  # pragma: no cover
+            raise NotImplementedError
 
-                cur_memory = sum(results[op_output.key][1] for op_output in first_op.outputs
-                                 if results.get(op_output.key) is not None)
-                if not self._no_intermediate:
-                    cur_memory += sum(tp[0] for key, tp in results.items()
-                                      if key not in self._fetch_keys and key not in output_keys
-                                      and isinstance(tp, tuple))
-                self._mock_max_memory = max(cur_memory, self._mock_max_memory)
+        self._op_key_to_ops = self._calc_op_key_to_ops()
+        self._target_chunk_keys.update(chunk_keys)
+        self._calc_ref_counts()
 
-            executed_chunk_keys.update([c.key for c in first_op.outputs])
-            op_keys.add(first_op.key)
-            # handle other operands
-            for rest_op in ops[1:]:
-                for op_output, rest_op_output in zip(first_op.outputs, rest_op.outputs):
-                    # if the op's outputs have been stored,
-                    # other same key ops' results will be the same
-                    if rest_op_output.key not in executed_chunk_keys:
-                        results[rest_op_output.key] = results[op_output.key]
+        ops_to_run = set(n.op.key for n in graph if graph.count_successors(n) == 0)
+        listener = GraphListener(ops_to_run, self._sync_provider)
+        for k in ops_to_run:
+            self._op_key_listeners[k].append(listener)
 
-            for output in itertools.chain(*[op.outputs for op in ops]):
-                # the output not in the graph will be skipped
-                if output not in self._graph:
-                    continue
-                with self._lock:
-                    # in case that operand has multiple outputs
-                    # and some of the output not in result keys, delete them
-                    if ref_counts.get(output.key) == 0:
-                        # if the result has been deleted, it should be skipped
-                        if output.key not in deleted_chunk_keys:
-                            deleted_chunk_keys.add(output.key)
-                            del results[output.key]
-
-                # clean the predecessors' results if ref counts equals 0
-                for dep_key in output.op.get_dependent_data_keys():
-                    with self._lock:
-                        if dep_key in ref_counts:
-                            ref_counts[dep_key] -= 1
-                            if ref_counts[dep_key] == 0:
-                                del results[dep_key]
-                                del ref_counts[dep_key]
-
-                # add successors' operands to queue
-                for succ_chunk in self._graph.iter_successors(output):
-                    preds = self._graph.predecessors(succ_chunk)
-                    with self._lock:
-                        succ_op_key = succ_chunk.op.key
-                        if succ_op_key not in self._add_queue_op_keys and \
-                                (len(preds) == 0 or all(pred.op.key in op_keys for pred in preds)):
-                            self._queue.insert(0, succ_chunk.op)
-                            self._add_queue_op_keys.add(succ_op_key)
-        except Exception:
-            self._has_error.set()
-            self._queue.errored()
-            raise
-        finally:
-            self._semaphore.release()
-
-    def _fetch_chunks(self, chunks):
-        """
-        Iterate all the successors of given chunks,
-        if the successor's predecessors except that in the chunks have all finished,
-        we will try to load the successor's all predecessors into memory in advance.
-        """
-
-        for chunk in chunks:
+        for op in self._order_starts():
             with self._lock:
-                to_fetch_chunk = None
-                for succ_chunk in self._graph.iter_successors(chunk):
-                    accepted = True
-                    for pred_chunk in self._graph.iter_predecessors(succ_chunk):
-                        if pred_chunk is chunk:
-                            continue
-                        if pred_chunk.op.key not in self._executed_op_keys:
-                            accepted = False
-                            break
-                    if accepted:
-                        to_fetch_chunk = succ_chunk
-                        break
-                if to_fetch_chunk is None and len(self._queue) > 0:
-                    to_fetch_chunk = self._queue[0]
-                for pred_chunk in self._graph.iter_predecessors(to_fetch_chunk):
-                    # if predecessor is spilled
-                    # the get will pull it back into memory
-                    self._chunk_results.get(pred_chunk.key)
+                self._submitted_op_keys.add(op.key)
+            self.submit_operand(op.key)
 
-    def _submit_operand_to_execute(self):
-        self._semaphore.acquire()
-        self._queue.wait()
+        return listener
 
-        if self._has_error.is_set():
-            # error happens, ignore
-            return
+    def finish_operand(self, op_key):
+        executed_op_keys = self._executed_op_keys
+        ref_counts = self._chunk_key_ref_counts
+        deleted_chunk_keys = set()
 
         with self._lock:
-            to_submit_op = self._queue.pop(0)
-        assert to_submit_op.key not in self._submitted_op_keys
-        self._submitted_op_keys.add(to_submit_op.key)
+            self._submitted_op_keys.remove(op_key)
+            executed_op_keys.add(op_key)
 
-        if self._print_progress:
-            i, n = len(self._submitted_op_keys), len(self._op_key_to_ops)
-            if i % 30 or i >= n:
-                logger.info('[%s] %.2f%% percent of graph has been submitted',
-                            datetime.datetime.now(), float(i) * 100 / n)
+        ops = list(self._op_key_to_ops[op_key])
+        # note that currently execution is the chunk-level
+        # so we pass the first operand's first output to Executor.handle
+        first_op = ops[0]
 
-        if self._prefetch:
-            # check the operand's outputs if any of its successor's predecessors can be prefetched
-            self._prefetch_executor.submit(self._fetch_chunks, to_submit_op.outputs)
-        # execute the operand and return future
-        return self._operand_executor.submit(self._execute_operand, to_submit_op)
+        first_output_keys = set([c.key for c in first_op.outputs])
+        # handle other operands
+        for rest_op in ops[1:]:
+            for op_output, rest_op_output in zip(first_op.outputs, rest_op.outputs):
+                # if the op's outputs have been stored,
+                # other same key ops' results will be the same
+                if rest_op_output.key not in first_output_keys:
+                    self.copy_data_ref(rest_op_output.key, op_output.key)
 
-    def execute(self, retval=True):
-        executed_futures = []
-        for _ in range(len(self._op_key_to_ops)):
-            if self._has_error.is_set():
-                # something wrong happened
-                break
+        for output in itertools.chain(*[op.outputs for op in ops]):
+            # the output not in the graph will be skipped
+            if output not in self._graph:
+                continue
+            with self._lock:
+                # in case that operand has multiple outputs
+                # and some of the output not in result keys, delete them
+                if ref_counts.get(output.key) == 0:
+                    # if the result has been deleted, it should be skipped
+                    if output.key not in deleted_chunk_keys:
+                        deleted_chunk_keys.add(output.key)
+                        self.delete_data(output.key)
 
-            future = self._submit_operand_to_execute()
-            if future is not None:
-                executed_futures.append(future)
+            # clean the predecessors' results if ref counts equals 0
+            for dep_key in output.op.get_dependent_data_keys():
+                with self._lock:
+                    if dep_key in ref_counts:
+                        ref_counts[dep_key] -= 1
+                        if ref_counts[dep_key] == 0:
+                            self.delete_data(dep_key)
+                            del ref_counts[dep_key]
 
-        # wait until all the futures completed
-        for future in executed_futures:
-            future.result()
+            # add successors' operands to queue
+            for succ_chunk in self._graph.iter_successors(output):
+                preds = self._graph.predecessors(succ_chunk)
+                with self._lock:
+                    succ_op_key = succ_chunk.op.key
+                    if succ_op_key not in self._submitted_op_keys \
+                            and succ_op_key not in self._executed_op_keys \
+                            and (len(preds) == 0 or all(pred.op.key in executed_op_keys for pred in preds)):
+                        self._submitted_op_keys.add(succ_op_key)
+                        self.submit_operand(succ_op_key)
 
-        if retval:
-            return [self._chunk_results[key] for key in self._keys]
+        self._notify_op_listeners(op_key)
+
+    def set_operand_to_fail(self, op_key, exc_info=None):
+        with self._lock:
+            op_chunks = dict()
+            for op in self._op_key_to_ops[op_key]:
+                op_chunks.update({c.key: c for c in op.outputs})
+
+            keys_to_cancel = set()
+            for c in self._graph.dfs(list(op_chunks.values())):
+                keys_to_cancel.add(c.op.key)
+
+        for op_key in keys_to_cancel:
+            self.cancel_operand(op_key, exc_info=exc_info)
+            with self._lock:
+                self._cancelled_op_keys.add(op_key)
+            self._notify_op_listeners(op_key, exc_info=exc_info)
+
+    def submit_operand(self, op_key):
+        raise NotImplementedError
+
+    def copy_data_ref(self, dest_chunk_key, src_chunk_key):
+        raise NotImplementedError
+
+    def cancel_operand(self, op_key, exc_info=None):
+        pass
+
+    def delete_data(self, chunk_key):
+        raise NotImplementedError
+
+
+class LocalChunkGraphExecutor(ChunkGraphExecutor):
+    _method_name = 'execute'
+    _op_runners = dict()
+
+    def __init__(self, chunk_results, sync_provider, engine=None, n_parallel=None):
+        super().__init__(sync_provider, engine=engine)
+        self._chunk_results = chunk_results
+
+        self._n_parallel = n_parallel or 1
+
+        # pool executor for the operand execution
+        self._operand_executor = sync_provider.thread_pool_executor(self._n_parallel)
+
+    def _assign_devices(self):
+        if self._n_parallel <= 1 or self._engine != 'cupy':
+            return
+
+        devices = list(range(self._n_parallel))
+        assigner = GraphDeviceAssigner(self._graph, self._submitted_op_keys, devices)
+        assigner.assign()
+
+    def _call_runner(self, op):
+        op_runners = self._op_runners
+        try:
+            runner = op_runners[type(op)]
+        except KeyError:
+            runner = getattr(op, self._method_name)
+
+        try:
+            return runner(self._chunk_results, op)
+        except NotImplementedError:
+            for op_cls in op_runners.keys():
+                if isinstance(op, op_cls):
+                    runner = op_runners[type(op)] = op_runners[op_cls]
+                    return runner(self._chunk_results, op)
+            raise KeyError('No handler found for op: %s' % op)
+
+    @enter_mode(kernel=True)
+    def _execute_operand(self, op_key):
+        try:
+            ops = list(self._op_key_to_ops[op_key])
+
+            # Cast `UFuncTypeError` to `TypeError` since subclasses of the former is unpickleable.
+            # The `UFuncTypeError` was introduced by numpy#12593 since v1.17.0.
+            try:
+                self._call_runner(ops[0])
+            except UFuncTypeError as e:
+                raise TypeError(str(e)).with_traceback(sys.exc_info()[2]) from None
+        except:  # noqa: E722
+            self._exc_info = sys.exc_info()
+            self.set_operand_to_fail(op_key, exc_info=self._exc_info)
+            raise
+
+    def submit_chunk_graph(self, graph, chunk_keys=None):
+        self._assign_devices()
+        listener = super().submit_chunk_graph(graph, chunk_keys=chunk_keys)
+        return listener
+
+    def submit_operand(self, op_key):
+        future = self._operand_executor.submit(self._execute_operand, op_key)
+        if callable(getattr(future, 'add_done_callback', None)):
+            future.add_done_callback(lambda _: self.finish_operand(op_key))
+        else:
+            future.rawlink(lambda _: self.finish_operand(op_key))
+
+    def copy_data_ref(self, dest_chunk_key, src_chunk_key):
+        self._chunk_results[dest_chunk_key] = self._chunk_results[src_chunk_key]
+
+    def delete_data(self, chunk_key):
+        del self._chunk_results[chunk_key]
+
+
+class MockChunkGraphExecutor(LocalChunkGraphExecutor):
+    _method_name = 'estimate_size'
+    _op_runners = dict()
+
+    def __init__(self, *args, **kwargs):
+        self._mock_max_memory = kwargs.pop('mock_max_memory', 0)
+        self._no_intermediate = kwargs.pop('no_intermediate', False)
+
+        self._fetch_keys = set()
+
+        super().__init__(*args, **kwargs)
+        self._operand_executor = MockThreadPoolExecutor(self._n_parallel)
+
+    def submit_chunk_graph(self, graph, chunk_keys=None):
+        self._fetch_keys.update(v.key for v in graph if isinstance(v.op, Fetch))
+        for c in graph:
+            if graph.count_predecessors(c) != 0:
+                continue
+            self._fetch_keys.update(inp.key for inp in c.inputs or ())
+
+        return super().submit_chunk_graph(graph, chunk_keys=chunk_keys)
+
+    def _call_runner(self, op):
+        super()._call_runner(op)
+        results = self._chunk_results
+
+        output_keys = set(o.key for o in op.outputs or ())
+
+        cur_memory = sum(results[op_output.key][1] for op_output in op.outputs
+                         if results.get(op_output.key) is not None)
+        if not self._no_intermediate:
+            cur_memory += sum(tp[0] for key, tp in results.items()
+                              if key not in self._fetch_keys and key not in output_keys
+                              and isinstance(tp, tuple))
+        self._mock_max_memory = max(cur_memory, self._mock_max_memory)
 
 
 class Executor(object):
-    _op_runners = {}
-    _op_size_estimators = {}
-    _graph_execution_cls = GraphExecution
+    _graph_executor_cls = LocalChunkGraphExecutor
 
     class SyncProviderType(Enum):
         THREAD = 0
@@ -626,32 +708,6 @@ class Executor(object):
     def mock_max_memory(self):
         return self._mock_max_memory
 
-    @classmethod
-    def handle(cls, op, results, mock=False):
-        method_name, mapper = ('execute', cls._op_runners) if not mock else \
-            ('estimate_size', cls._op_size_estimators)
-        try:
-            runner = mapper[type(op)]
-        except KeyError:
-            runner = getattr(op, method_name)
-        try:
-            if UFuncTypeError is None:
-                return runner(results, op)
-            else:
-                # Cast `UFuncTypeError` to `TypeError` since subclasses of the former is unpickleable.
-                # The `UFuncTypeError` was introduced by numpy#12593 since v1.17.0.
-                try:
-                    return runner(results, op)
-                except UFuncTypeError as e:
-                    raise TypeError(str(e)).with_traceback(sys.exc_info()[2]) from None
-        except NotImplementedError:
-            for op_cls in mapper.keys():
-                if isinstance(op, op_cls):
-                    mapper[type(op)] = mapper[op_cls]
-                    runner = mapper[op_cls]
-                    return runner(results, op)
-            raise KeyError(f'No handler found for op: {op}')
-
     def execute_graph(self, graph, keys, n_parallel=None, print_progress=False,
                       mock=False, no_intermediate=False, compose=True, retval=True,
                       chunk_result=None):
@@ -671,28 +727,24 @@ class Executor(object):
             RuntimeOptimizer(graph, self._engine).optimize(keys=keys)
         optimized_graph = graph
 
-        if not mock:
-            # fetch_keys only useful when calculating sizes
-            fetch_keys = set()
-        else:
-            fetch_keys = set(v.key for v in graph if isinstance(v.op, Fetch))
-            for c in graph:
-                if graph.count_predecessors(c) != 0:
-                    continue
-                fetch_keys.update(inp.key for inp in c.inputs or ())
-
         executed_keys = set()
         for t in itertools.chain(*list(self.stored_tileables.values())):
             executed_keys.update([c.key for c in t.chunks])
         chunk_result = self._chunk_result if chunk_result is None else chunk_result
-        graph_execution = self._graph_execution_cls(
-            chunk_result, optimized_graph, keys, executed_keys, self._sync_provider,
-            n_parallel=n_parallel, engine=self._engine, prefetch=self._prefetch,
-            print_progress=print_progress, mock=mock, mock_max_memory=self._mock_max_memory,
-            fetch_keys=fetch_keys, no_intermediate=no_intermediate)
-        res = graph_execution.execute(retval)
-        self._mock_max_memory = max(self._mock_max_memory, graph_execution._mock_max_memory)
+
+        if not mock:
+            graph_executor = self._graph_executor_cls(
+                chunk_result, self._sync_provider, engine=self._engine, n_parallel=n_parallel)
+        else:
+            graph_executor = MockChunkGraphExecutor(
+                chunk_result, self._sync_provider, engine=self._engine, n_parallel=n_parallel,
+                mock_max_memory=self._mock_max_memory)
+        graph_listener = graph_executor.submit_chunk_graph(optimized_graph, keys)
+        graph_listener.wait()
+        res = [chunk_result[k] for k in keys] if retval else None
+
         if mock:
+            self._mock_max_memory = max(self._mock_max_memory, graph_executor._mock_max_memory)
             chunk_result.clear()
         return res
 
@@ -1013,20 +1065,20 @@ def ignore(*_):
     pass
 
 
-Executor._op_runners[Fetch] = ignore
-Executor._op_runners[ShuffleProxy] = ignore
+LocalChunkGraphExecutor._op_runners[Fetch] = ignore
+LocalChunkGraphExecutor._op_runners[ShuffleProxy] = ignore
 
 
 def register(op_cls, handler=None, size_estimator=None):
     if handler:
-        Executor._op_runners[op_cls] = handler
+        LocalChunkGraphExecutor._op_runners[op_cls] = handler
     if size_estimator:
-        Executor._op_size_estimators[op_cls] = size_estimator
+        MockChunkGraphExecutor._op_runners[op_cls] = size_estimator
 
 
 def register_default(op_cls):
-    Executor._op_runners.pop(op_cls, None)
-    Executor._op_size_estimators.pop(op_cls, None)
+    LocalChunkGraphExecutor._op_runners.pop(op_cls, None)
+    MockChunkGraphExecutor._op_runners.pop(op_cls, None)
 
 
 # import to register operands

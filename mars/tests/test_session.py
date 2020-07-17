@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
 
 import mars.tensor as mt
 import mars.dataframe as md
-from mars.executor import register, Executor
+from mars.executor import register, LocalChunkGraphExecutor
 from mars.tensor.datasource import ArrayDataSource
 from mars.tiles import get_tiled
 from mars.session import new_session, Session
@@ -354,7 +354,7 @@ class Test(unittest.TestCase):
 
             self.assertAlmostEqual(s.fetch(), raw.sum())
         finally:
-            del Executor._op_runners[ArrayDataSource]
+            del LocalChunkGraphExecutor._op_runners[ArrayDataSource]
 
     def testDecref(self):
         sess = new_session()

@@ -58,10 +58,6 @@ class TensorFrexp(TensorOutBinOp):
 
             try:
                 args = [input]
-                if out1 is not None:
-                    args.append(out1)
-                if out2 is not None:
-                    args.append(out2)
                 mantissa, exponent = xp.frexp(*args, **kw)
             except TypeError:
                 if where is None:

@@ -58,10 +58,6 @@ class TensorModf(TensorOutBinOp):
 
             try:
                 args = [input]
-                if out1 is not None:
-                    args.append(out1.copy())
-                if out2 is not None:
-                    args.append(out2.copy())
                 y1, y2 = xp.modf(*args, **kw)
             except TypeError:
                 if where is None:

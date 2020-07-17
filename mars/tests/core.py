@@ -31,7 +31,7 @@ import pandas as pd
 
 from mars.context import LocalContext
 from mars.core import OBJECT_TYPE
-from mars.executor import Executor, GraphExecution
+from mars.executor import Executor, LocalChunkGraphExecutor
 from mars.graph import SerializableGraph
 from mars.optimizes.chunk_graph.fuse import Fusion
 from mars.serialize import serializes, deserializes, \
@@ -589,14 +589,15 @@ class MarsObjectCheckMixin:
             cls.assert_categorical_consistent(expected, real)
 
 
-class GraphExecutionWithChunkCheck(MarsObjectCheckMixin, GraphExecution):
-    def _execute_operand(self, op):
-        super()._execute_operand(op)
-        if self._mock:
-            return
+class ChunkGraphExecutorWithCheck(MarsObjectCheckMixin, LocalChunkGraphExecutor):
+    def _execute_operand(self, op_key):
+        super()._execute_operand(op_key)
         if _check_options.get('check_all', True):
-            for o in op.outputs:
-                if o.key not in self._key_set:
+            outputs = dict()
+            for op in self._op_key_to_ops[op_key]:
+                outputs.update({o.key: o for o in op.outputs})
+            for o in outputs.values():
+                if o.key not in self._target_chunk_keys:
                     continue
                 self.assert_object_consistent(o, self._chunk_results[o.key])
 
@@ -607,7 +608,7 @@ class ExecutorForTest(MarsObjectCheckMixin, Executor):
     graph will be serialized then deserialized by Protocol Buffers and JSON both.
     """
     __test__ = False
-    _graph_execution_cls = GraphExecutionWithChunkCheck
+    _graph_executor_cls = ChunkGraphExecutorWithCheck
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

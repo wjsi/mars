@@ -23,7 +23,7 @@ import mars.dataframe as md
 import mars.tensor as mt
 from mars.dataframe.datasource.read_csv import DataFrameReadCSV
 from mars.dataframe.datasource.read_sql import DataFrameReadSQL
-from mars.executor import register, Executor
+from mars.executor import register, LocalChunkGraphExecutor
 from mars.session import new_session
 from mars.tests.core import TestBase, ExecutorForTest
 
@@ -837,7 +837,7 @@ class Test(TestBase):
             register(op_cls, _execute_data_source)
             yield
         finally:
-            del Executor._op_runners[op_cls]
+            del LocalChunkGraphExecutor._op_runners[op_cls]
 
     @staticmethod
     @contextlib.contextmanager
@@ -859,7 +859,7 @@ class Test(TestBase):
             register(op_cls, _execute_data_source)
             yield
         finally:
-            del Executor._op_runners[op_cls]
+            del LocalChunkGraphExecutor._op_runners[op_cls]
 
     @staticmethod
     @contextlib.contextmanager
@@ -878,7 +878,7 @@ class Test(TestBase):
             register(op_cls, _execute_data_source)
             yield
         finally:
-            del Executor._op_runners[op_cls]
+            del LocalChunkGraphExecutor._op_runners[op_cls]
 
     def testOptimization(self):
         import sqlalchemy as sa
