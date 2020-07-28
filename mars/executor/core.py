@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
@@ -20,7 +19,7 @@ from enum import Enum
 from ..utils import classproperty
 
 try:
-    import gevent
+    import gevent.pool
 except ImportError:  # pragma: no cover
     gevent = None
 
@@ -193,45 +192,18 @@ class GeventExecutorSyncProvider(ExecutorSyncProvider):
 
 
 class MockThreadPoolExecutor(object):
-    class _MockResult(object):
-        def __init__(self, result=None, exc_info=None):
-            self._result = result
-            self._exc_info = exc_info
-
-        def result(self, *_):
-            if self._exc_info is not None:
-                raise self._exc_info[1] from None
-            else:
-                return self._result
-
-        def exception_info(self, *_):
-            return self._exc_info
-
-        def add_done_callback(self, callback):
-            callback(self)
-
     def __init__(self, *_):
-        pass
+        self._pool = ThreadPoolExecutor(1)
 
     def submit(self, fn, *args, **kwargs):
-        try:
-            return self._MockResult(fn(*args, **kwargs))
-        except:  # noqa: E722
-            return self._MockResult(None, sys.exc_info())
+        return self._pool.submit(fn, *args, **kwargs)
 
     @classmethod
     def queue(cls, *args, **kwargs):
         return EventQueue(None, *args, **kwargs)
 
 
-class MockExecutorSyncProvider(ThreadExecutorSyncProvider):
-    @classmethod
-    def thread_pool_executor(cls, n_workers):
-        return MockThreadPoolExecutor(n_workers)
-
-
 _sync_provider = {
-    SyncProviderType.MOCK: MockExecutorSyncProvider,
     SyncProviderType.THREAD: ThreadExecutorSyncProvider,
     SyncProviderType.GEVENT: GeventExecutorSyncProvider,
 }

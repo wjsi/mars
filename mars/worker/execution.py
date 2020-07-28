@@ -22,7 +22,7 @@ from .. import promise
 from ..config import options
 from ..errors import PinDataKeyFailed, WorkerProcessStopped, WorkerDead, \
     ExecutionInterrupted, DependencyMissing
-from ..executor import Executor, SyncProviderType
+from ..executor import Executor
 from ..operands import Fetch, FetchShuffle
 from ..utils import BlacklistSet, deserialize_graph, log_unhandled, build_exc_info, \
     calc_data_size, get_chunk_shuffle_key, calc_object_overhead
@@ -209,7 +209,7 @@ class ExecutionActor(WorkerActor):
                 n.extra_params['_shapes'] = \
                     dict(((k, shuffle_key), v) for k, v in zip(n.op.to_fetch_keys, shapes))
 
-        executor = Executor(storage=size_ctx, sync_provider_type=SyncProviderType.MOCK)
+        executor = Executor(storage=size_ctx)
         res = executor.execute_graph(graph_record.graph, graph_record.chunk_targets, mock=True)
 
         targets = graph_record.chunk_targets

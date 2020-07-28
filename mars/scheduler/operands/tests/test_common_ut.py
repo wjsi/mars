@@ -18,9 +18,10 @@ import uuid
 from collections import defaultdict
 
 from mars import promise, tensor as mt
+from mars.executor import OperandState
 from mars.graph import DAG
-from mars.scheduler import OperandState, ResourceActor, ChunkMetaActor,\
-    ChunkMetaClient, AssignerActor, GraphActor, OperandActor
+from mars.scheduler import ResourceActor, ChunkMetaActor, ChunkMetaClient, \
+    AssignerActor, GraphActor, OperandActor
 from mars.scheduler.utils import SchedulerClusterInfoActor
 from mars.tests.core import patch_method, create_actor_pool
 from mars.utils import get_next_port, serialize_graph
