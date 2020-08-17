@@ -24,6 +24,6 @@ from .vineyardhandler import VineyardHandler
 from .iorunner import IORunnerActor
 from .manager import StorageManagerActor
 from .sharedstore import PlasmaKeyMapActor
-from .objectholder import ObjectHolderActor, SharedHolderActor, InProcHolderActor, \
-    CudaHolderActor
+from .objectholder import ObjectHolderActor, SharedHolderActor, \
+    DiskMMapHolderActor, InProcHolderActor, CudaHolderActor
 from .vineyardhandler import VineyardKeyMapActor

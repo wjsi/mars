@@ -26,7 +26,7 @@ from mars.tests.core import patch_method
 from mars.utils import get_next_port
 from mars.worker import WorkerDaemonActor, QuotaActor, MemQuotaActor, StatusActor, EventsActor
 from mars.worker.storage import StorageHandler, StorageManagerActor, InProcHolderActor, \
-    PlasmaKeyMapActor, SharedHolderActor, DataStorageDevice
+    DiskMMapHolderActor, PlasmaKeyMapActor, SharedHolderActor, DataStorageDevice
 from mars.worker.tests.base import WorkerCase
 from mars.worker.utils import WorkerClusterInfoActor
 
@@ -48,6 +48,7 @@ class Test(WorkerCase):
         with self.create_pool(n_process=1, address=test_addr) as pool, \
                 self.run_actor_test(pool) as test_actor:
             pool.create_actor(WorkerDaemonActor, uid=WorkerDaemonActor.default_uid())
+            pool.create_actor(DiskMMapHolderActor, uid=DiskMMapHolderActor.default_uid())
             storage_manager_ref = pool.create_actor(
                 StorageManagerActor, uid=StorageManagerActor.default_uid())
 
@@ -142,6 +143,7 @@ class Test(WorkerCase):
                 self.run_actor_test(pool) as test_actor:
             pool.create_actor(WorkerClusterInfoActor, [test_addr],
                               uid=WorkerClusterInfoActor.default_uid())
+            pool.create_actor(DiskMMapHolderActor, uid=DiskMMapHolderActor.default_uid())
             pool.create_actor(StatusActor, test_addr, uid=StatusActor.default_uid())
             pool.create_actor(EventsActor, uid=EventsActor.default_uid())
 
@@ -194,6 +196,7 @@ class Test(WorkerCase):
         with self.create_pool(n_process=1, address=test_addr) as pool, \
                 self.run_actor_test(pool) as test_actor:
             pool.create_actor(WorkerDaemonActor, uid=WorkerDaemonActor.default_uid())
+            pool.create_actor(DiskMMapHolderActor, uid=DiskMMapHolderActor.default_uid())
             storage_manager_ref = pool.create_actor(
                 StorageManagerActor, uid=StorageManagerActor.default_uid())
 

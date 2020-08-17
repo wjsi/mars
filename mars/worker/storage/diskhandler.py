@@ -13,22 +13,24 @@
 # limitations under the License.
 
 import functools
+import mmap
 import os
-import shutil
+import random
 import sys
 import time
 
 from ... import promise
 from ...config import options
-from ...serialize import dataserializer
 from ...errors import SpillNotConfigured, StorageDataExists
-from ...utils import mod_hash
+from ...serialize import dataserializer
+from ...utils import mod_hash, tokenize
 from ..dataio import FileBufferIO
 from ..events import EventsActor, EventCategory, EventLevel, ProcedureEventType
 from ..status import StatusActor
 from ..utils import parse_spill_dirs
 from .core import StorageHandler, BytesStorageMixin, BytesStorageIO, \
     DataStorageDevice, wrap_promised, register_storage_handler_cls
+from .objectholder import DiskMMapHolderActor
 
 
 def _get_file_dir_id(session_id, data_key):
@@ -36,24 +38,24 @@ def _get_file_dir_id(session_id, data_key):
     return mod_hash((session_id, data_key), len(dirs))
 
 
-def _build_file_name(session_id, data_key, writing=False):
+def _build_file_name(session_id, data_key):
     """
     Build spill file name from chunk key. Path is selected given hash of the chunk key
     :param data_key: chunk key
     """
-    if isinstance(data_key, tuple):
-        data_key = '@'.join(data_key)
+    basename = data_key
+    if isinstance(basename, tuple):
+        basename = '@'.join(basename)
+    basename += '_' + tokenize(time.time(), random.random())
     dirs = options.worker.spill_directory
-    spill_dir = os.path.join(dirs[_get_file_dir_id(session_id, data_key)], str(session_id))
-    if writing:
-        spill_dir = os.path.join(spill_dir, 'writing')
+    spill_dir = os.path.join(dirs[_get_file_dir_id(session_id, basename)], str(session_id))
     if not os.path.exists(spill_dir):
         try:
             os.makedirs(spill_dir)
         except OSError:  # pragma: no cover
             if not os.path.exists(spill_dir):
                 raise
-    return os.path.join(spill_dir, data_key)
+    return os.path.join(spill_dir, basename)
 
 
 class DiskIO(BytesStorageIO):
@@ -73,18 +75,22 @@ class DiskIO(BytesStorageIO):
         self._total_time = 0
         self._event_id = None
 
-        filename = self._dest_filename = self._filename = _build_file_name(session_id, data_key)
+        [filename] = self._handler.holder_ref.get_objects_file_names(session_id, [data_key])
+        self._filename = filename
         if self.is_writable:
-            if os.path.exists(self._dest_filename):
+            if filename is not None and os.path.exists(filename):
                 exist_devs = self._storage_ctx.manager_ref.get_data_locations(session_id, [data_key])[0]
                 if (0, DataStorageDevice.DISK) in exist_devs:
                     self._closed = True
                     raise StorageDataExists(f'File for data ({session_id}, {data_key}) already exists')
                 else:
-                    os.unlink(self._dest_filename)
+                    os.unlink(filename)
 
-            filename = self._filename = _build_file_name(session_id, data_key, writing=True)
-            buf = self._raw_buf = open(filename, 'wb')
+            filename = self._filename = _build_file_name(session_id, data_key)
+            self._raw_buf = open(filename, 'w+b')
+            self._raw_buf.truncate(nbytes)
+            self._raw_buf.seek(0, os.SEEK_SET)
+            buf = mmap.mmap(self._raw_buf.fileno(), 0, mmap.MAP_SHARED, mmap.PROT_WRITE)
 
             if packed:
                 self._buf = FileBufferIO(
@@ -95,7 +101,8 @@ class DiskIO(BytesStorageIO):
                 ))
                 self._buf = dataserializer.open_compression_file(buf, compress)
         elif self.is_readable:
-            buf = self._raw_buf = open(filename, 'rb')
+            self._raw_buf = open(filename, 'r+b')
+            buf = mmap.mmap(self._raw_buf.fileno(), 0, mmap.MAP_SHARED, mmap.PROT_READ)
 
             header = dataserializer.read_file_header(buf)
             self._nbytes = header.nbytes
@@ -124,7 +131,7 @@ class DiskIO(BytesStorageIO):
 
     @property
     def filename(self):
-        return self._dest_filename
+        return self._filename
 
     def get_io_pool(self, pool_name=None):
         file_dir_id = _get_file_dir_id(self._session_id, self._data_key)
@@ -148,6 +155,10 @@ class DiskIO(BytesStorageIO):
         if self._closed:
             return
 
+        if self.is_writable:
+            self._handler.holder_ref.put_objects_by_file_names(
+                self._session_id, [self._data_key], file_names=[self._filename])
+
         self._buf.close()
         if self._raw_buf is not self._buf:
             self._raw_buf.close()
@@ -160,7 +171,6 @@ class DiskIO(BytesStorageIO):
         if self.is_writable:
             status_key = 'disk_write_speed'
             if finished:
-                shutil.move(self._filename, self._dest_filename)
                 self.register(self._nbytes)
             else:
                 os.unlink(self._filename)
@@ -182,6 +192,8 @@ class DiskHandler(StorageHandler, BytesStorageMixin):
         super().__init__(storage_ctx, proc_id=proc_id)
         self._compress = dataserializer.CompressType(options.worker.disk_compression)
 
+        self._holder_ref = self._storage_ctx.actor_ref(DiskMMapHolderActor.default_uid())
+
         self._status_ref = self._storage_ctx.actor_ref(StatusActor.default_uid())
         if not self._storage_ctx.has_actor(self._status_ref):
             self._status_ref = None
@@ -191,12 +203,16 @@ class DiskHandler(StorageHandler, BytesStorageMixin):
             self._events_ref = None
 
     @property
-    def status_ref(self):
-        return self._status_ref
-
-    @property
     def events_ref(self):
         return self._events_ref
+
+    @property
+    def holder_ref(self):
+        return self._holder_ref
+
+    @property
+    def status_ref(self):
+        return self._status_ref
 
     @wrap_promised
     def create_bytes_reader(self, session_id, data_key, packed=False, packed_compression=None,
@@ -254,13 +270,15 @@ class DiskHandler(StorageHandler, BytesStorageMixin):
         return self.transfer_in_runner(session_id, data_keys, src_handler, _fallback)
 
     def delete(self, session_id, data_keys, _tell=False):
-        for data_key in data_keys:
-            file_name = _build_file_name(session_id, data_key)
+        filenames = self._holder_ref.get_objects_file_names(session_id, data_keys)
+        for data_key, filename in zip(data_keys, filenames):
+            if not filename:  # pragma: no cover
+                continue
             if sys.platform == 'win32':  # pragma: no cover
                 CREATE_NO_WINDOW = 0x08000000
-                self._actor_ctx.popen(['del', file_name], creationflags=CREATE_NO_WINDOW)
+                self._actor_ctx.popen(['del', filename], creationflags=CREATE_NO_WINDOW)
             else:
-                self._actor_ctx.popen(['rm', '-f', file_name])
+                self._actor_ctx.popen(['rm', '-f', filename])
         self.unregister_data(session_id, data_keys, _tell=_tell)
 
 

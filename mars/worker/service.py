@@ -34,7 +34,7 @@ from .calc import CpuCalcActor, CudaCalcActor
 from .transfer import SenderActor, ReceiverManagerActor, ReceiverWorkerActor, ResultSenderActor
 from .prochelper import ProcessHelperActor
 from .storage import IORunnerActor, StorageManagerActor, SharedHolderActor, \
-    InProcHolderActor, CudaHolderActor
+    DiskMMapHolderActor, InProcHolderActor, CudaHolderActor
 from .utils import WorkerClusterInfoActor
 
 
@@ -47,6 +47,7 @@ class WorkerService(object):
 
         self._storage_manager_ref = None
         self._shared_holder_ref = None
+        self._disk_mmap_holder_ref = None
         self._task_queue_ref = None
         self._mem_quota_ref = None
         self._dispatch_ref = None
@@ -235,6 +236,9 @@ class WorkerService(object):
         # create SharedHolderActor
         self._shared_holder_ref = pool.create_actor(
             SharedHolderActor, self._cache_mem_limit, uid=SharedHolderActor.default_uid())
+        # create DiskMMapHolderActor
+        self._disk_mmap_holder_ref = pool.create_actor(
+            DiskMMapHolderActor, uid=DiskMMapHolderActor.default_uid())
         # create DispatchActor
         self._dispatch_ref = pool.create_actor(DispatchActor, uid=DispatchActor.default_uid())
         # create EventsActor

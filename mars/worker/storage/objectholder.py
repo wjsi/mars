@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import functools
+import itertools
 import logging
+import mmap
 import os
 import time
 from collections import OrderedDict
@@ -325,6 +327,51 @@ class SharedHolderActor(ObjectHolderActor):
 
         self.storage_client.register_data(
             session_id, data_keys, (0, self._storage_device), sizes, shapes=shapes)
+
+
+class DiskMMapHolderActor(ObjectHolderActor):
+    _storage_device = DataStorageDevice.DISK
+
+    def __init__(self, size_limit=0):
+        super().__init__(size_limit=size_limit)
+        self._key_to_file_obj = dict()
+
+    def update_cache_status(self):
+        pass
+
+    def delete_objects(self, session_id, data_keys):
+        for key in data_keys:
+            self._data_holder[(session_id, key)].close()
+            file_obj = self._key_to_file_obj.pop((session_id, key))
+            file_obj.close()
+
+        super().delete_objects(session_id, data_keys)
+
+    def post_delete(self, session_id, data_keys):
+        pass
+
+    def put_objects_by_file_names(self, session_id, data_keys, shapes=None, file_names=None):
+        sizes = []
+        for key, file_name in zip(data_keys, file_names):
+            size = os.path.getsize(file_name)
+            file_obj = open(file_name, 'r+b')
+            mm = mmap.mmap(file_obj.fileno(), 0, mmap.MAP_SHARED, mmap.PROT_READ)
+
+            self._key_to_file_obj[(session_id, key)] = file_obj
+            self._internal_put_object(session_id, key, mm, size)
+            sizes.append(size)
+
+        self.storage_client.register_data(
+            session_id, data_keys, (0, self._storage_device), sizes, shapes=shapes)
+
+    def get_objects_file_names(self, session_id, data_keys):
+        ret = [None] * len(data_keys)
+        for idx, key in enumerate(data_keys):
+            try:
+                ret[idx] = self._key_to_file_obj[(session_id, key)].name
+            except KeyError:
+                pass
+        return ret
 
 
 class InProcHolderActor(SimpleObjectHolderActor):

@@ -33,7 +33,8 @@ from mars.worker import WorkerDaemonActor, MemQuotaActor, QuotaActor, DispatchAc
 from mars.worker.utils import WorkerActor
 from mars.worker.tests.base import WorkerCase
 from mars.worker.storage import StorageManagerActor, IORunnerActor, SharedHolderActor, \
-    PlasmaKeyMapActor, InProcHolderActor, StorageHandler, DataStorageDevice
+    DiskMMapHolderActor, PlasmaKeyMapActor, InProcHolderActor, StorageHandler, \
+    DataStorageDevice
 
 
 class OtherProcessTestActor(WorkerActor):
@@ -97,6 +98,7 @@ class Test(WorkerCase):
             options.worker.io_parallel_num = 1024
             pool.create_actor(WorkerDaemonActor, uid=WorkerDaemonActor.default_uid())
             pool.create_actor(StorageManagerActor, uid=StorageManagerActor.default_uid())
+            pool.create_actor(DiskMMapHolderActor, uid=DiskMMapHolderActor.default_uid())
 
             pool.create_actor(DispatchActor, uid=DispatchActor.default_uid())
             pool.create_actor(IORunnerActor)
