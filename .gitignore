@@ -78,12 +78,13 @@ mars/*.h*
 mars/lib/*.c*
 mars/actors/*.c*
 mars/actors/pool/*.c*
+mars/dataframe/arrays/*.c*
+mars/learn/cluster/*.c*
+mars/learn/utils/*.c*
 mars/optimizes/**/*.c*
 mars/scheduler/*.c*
 mars/serialize/*.c*
 mars/worker/*.c*
-mars/learn/cluster/*.c*
-mars/learn/utils/*.c*
 
 # files built from protobuf files
 mars/opcodes.py

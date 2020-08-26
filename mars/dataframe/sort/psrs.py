@@ -21,7 +21,7 @@ from ...utils import lazy_import, get_shuffle_input_keys_idxes
 from ...operands import OperandStage
 from ...serialize import Int32Field, ListField, StringField, BoolField
 from ...tensor.base.psrs import PSRSOperandMixin
-from ..utils import standardize_range_index
+from ..utils import standardize_range_index, df_searchsorted
 from ..operands import DataFrameOperandMixin, DataFrameOperand, DataFrameShuffleProxy, \
     DataFrameMapReduceOperand
 
@@ -454,13 +454,12 @@ class DataFramePSRSShuffle(DataFrameMapReduceOperand, DataFrameOperandMixin):
 
         if isinstance(a, pd.DataFrame):
             # use numpy.searchsorted to find split positions.
-            records = a[op.by].to_records(index=False)
-            p_records = pivots.to_records(index=False)
+            records = a[op.by]
             if op.ascending:
-                poses = records.searchsorted(p_records, side='right')
+                poses = df_searchsorted(records, pivots, side='right')
             else:
-                poses = len(records) - records[::-1].searchsorted(p_records, side='right')
-            del records, p_records
+                poses = len(records) - df_searchsorted(records[::-1], pivots, side='right')
+            del records
 
             poses = (None,) + tuple(poses) + (None,)
             for i in range(op.n_partition):

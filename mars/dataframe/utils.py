@@ -985,3 +985,31 @@ def to_arrow_dtypes(dtypes, test_df=None):
                 # empty, set arrow string dtype
                 new_dtypes.iloc[i] = ArrowStringDtype()
     return new_dtypes
+
+
+def df_searchsorted(df: pd.DataFrame, v: pd.DataFrame, side: str = 'left', sorter=None):
+    left_bounds = np.repeat(0, len(v))
+    right_bounds = np.repeat(len(df), len(v))
+
+    for col_name in v.columns:
+        data_col = df[col_name]
+        search_col = v[col_name]
+
+        def search_fun(left, right, val):
+            if left == right:
+                return left, right
+
+            if sorter is not None:
+                data_sel = data_col
+                sorter_sel = sorter[left:right]
+            else:
+                data_sel = data_col[left:right]
+                sorter_sel = None
+            left_bound = left + data_sel.searchsorted(np.array([val]), side='left', sorter=sorter_sel)
+            right_bound = left + data_sel.searchsorted(np.array([val]), side='right', sorter=sorter_sel)
+            return left_bound, right_bound
+
+        search_fun_vct = np.vectorize(search_fun)
+        left_bounds, right_bounds = search_fun_vct(left_bounds, right_bounds, search_col)
+
+    return left_bounds if side == 'left' else right_bounds

@@ -238,7 +238,7 @@ def loads(buf):
     compress = header.compress
 
     if compress == CompressType.NONE:
-        data = buf[HEADER_LENGTH:]
+        data = mv[HEADER_LENGTH:]
     else:
         data = decompressors[compress](mv[HEADER_LENGTH:])
 

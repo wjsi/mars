@@ -229,7 +229,7 @@ class ArrowArray(ExtensionArray):
         self._force_use_pandas = False
 
     def __repr__(self):
-        return f"{type(self).__name__}({repr(self._arrow_array)})"
+        return f"{type(self).__name__}({self._arrow_array!r})"
 
     @property
     def dtype(self) -> "Type[ArrowDtype]":
@@ -324,6 +324,8 @@ class ArrowArray(ExtensionArray):
                 return cls(self._arrow_array.slice(offset=start, length=stop - start),
                            dtype=self._dtype)
             elif hasattr(item, 'dtype') and np.issubdtype(item.dtype, np.bool_):
+                if np.all(item):
+                    return self
                 return cls(self._arrow_array.filter(pa.array(item, from_pandas=True)),
                            dtype=self._dtype)
             elif hasattr(item, 'dtype'):
@@ -457,6 +459,31 @@ class ArrowStringArray(ArrowArray, StringArrayBase):
     @classmethod
     def _to_arrow_array(cls, scalars):
         return pa.array(scalars).cast(pa.string())
+
+    def _values_for_argsort(self):
+        try:
+            from .arrow_utils import arrow_chunked_array_argsort
+            return self
+        except ImportError:
+            return super()._values_for_argsort()
+
+    def argsort(
+            self, ascending: bool = True, kind: str = "quicksort", *args, **kwargs
+    ) -> np.ndarray:
+        try:
+            if args or kwargs:
+                raise TypeError
+            from .arrow_utils import arrow_chunked_array_argsort
+            return arrow_chunked_array_argsort(self._arrow_array, ascending=ascending, kind=kind)
+        except (ImportError, NotImplementedError, TypeError):
+            return super().argsort(ascending, kind, *args, **kwargs)
+
+    def searchsorted(self, value, side="left", sorter=None):
+        try:
+            from .arrow_utils import arrow_chunked_array_searchsorted
+            return arrow_chunked_array_searchsorted(self._arrow_array, value, side=side, sorter=sorter)
+        except (ImportError, NotImplementedError):
+            return super().searchsorted(value, side=side, sorter=sorter)
 
     def __setitem__(self, key, value):
         if isinstance(value, (pd.Index, pd.Series)):

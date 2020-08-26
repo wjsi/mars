@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import platform
 import re
@@ -116,17 +117,31 @@ cy_extensions = [
     Extension('mars.actors.pool.messages', ['mars/actors/pool/messages.pyx'], **cy_extension_kw),
     Extension('mars.actors.pool.utils', ['mars/actors/pool/utils.pyx'], **cy_extension_kw),
     Extension('mars.actors.pool.gevent_pool', ['mars/actors/pool/gevent_pool.pyx'], **cy_extension_kw),
-    Extension('mars.serialize.core', ['mars/serialize/core.pyx'], **cy_extension_kw),
-    Extension('mars.serialize.pbserializer', ['mars/serialize/pbserializer.pyx'], **cy_extension_kw),
-    Extension('mars.serialize.jsonserializer', ['mars/serialize/jsonserializer.pyx'], **cy_extension_kw),
     Extension('mars.learn.cluster._k_means_fast', ['mars/learn/cluster/_k_means_fast.pyx'], **cy_extension_kw),
     Extension('mars.learn.cluster._k_means_elkan', ['mars/learn/cluster/_k_means_elkan.pyx'], **cy_extension_kw),
     Extension('mars.learn.cluster._k_means_lloyd', ['mars/learn/cluster/_k_means_lloyd.pyx'], **cy_extension_kw),
     Extension('mars.learn.utils._cython_blas', ['mars/learn/utils/_cython_blas.pyx'], **cy_extension_kw),
+    Extension('mars.serialize.core', ['mars/serialize/core.pyx'], **cy_extension_kw),
+    Extension('mars.serialize.pbserializer', ['mars/serialize/pbserializer.pyx'], **cy_extension_kw),
+    Extension('mars.serialize.jsonserializer', ['mars/serialize/jsonserializer.pyx'], **cy_extension_kw),
 ]
 
+try:
+    import pyarrow as pa
+    cy_arrow_kw = copy.deepcopy(cy_extension_kw)
+    cy_arrow_kw['include_dirs'].append(pa.get_include())
+    cy_arrow_kw['libraries'] = pa.get_libraries()
+    cy_arrow_kw['library_dirs'] = pa.get_library_dirs()
+    if os.name == 'posix':
+        cy_arrow_kw['extra_compile_args'].append('-std=c++11')
+    cy_extensions.append(
+        Extension('mars.dataframe.arrays.arrow_utils', ['mars/dataframe/arrays/arrow_utils.pyx'], **cy_arrow_kw)
+    )
+except ImportError:
+    pass
+
 extensions = cythonize(cy_extensions, **cythonize_kw) + \
-    [Extension('mars.lib.mmh3', ['mars/lib/mmh3_src/mmh3module.cpp', 'mars/lib/mmh3_src/MurmurHash3.cpp'])]
+             [Extension('mars.lib.mmh3', ['mars/lib/mmh3_src/mmh3module.cpp', 'mars/lib/mmh3_src/MurmurHash3.cpp'])]
 
 
 build_protos_cmd = os.path.join(repo_root, 'bin', 'build-protos.py')

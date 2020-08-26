@@ -6,8 +6,8 @@ yum install -y atlas-devel
 
 # Install requirements
 PYBIN=/opt/python/${PYABI}/bin
-REQ_FILE=/io/requirements-wheel.txt
-"${PYBIN}/pip" install -r $REQ_FILE
+"${PYBIN}/pip" install -r /io/requirements-wheel.txt
+"${PYBIN}/python" -c "import pyarrow; pyarrow.create_library_symlinks()"
 
 # Compile wheels
 cd /io

@@ -34,6 +34,7 @@ else
 
     pip install -r requirements-wheel.txt
     pip wheel --no-deps .
+    python -c "import pyarrow; pyarrow.create_library_symlinks()"
 
     conda activate test
 

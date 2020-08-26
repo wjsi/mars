@@ -5,3 +5,4 @@ cython==0.29.3
 protobuf==3.6.1
 requests>=2.4.0
 cloudpickle>=1.0.0
+pyarrow==0.17.0
