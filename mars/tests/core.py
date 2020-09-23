@@ -594,7 +594,7 @@ class ChunkGraphExecutorWithCheck(MarsObjectCheckMixin, LocalChunkGraphExecutor)
         super()._execute_operand(op_key)
         if _check_options.get('check_all', True):
             outputs = dict()
-            for op in self._op_key_to_ops[op_key]:
+            for op in self._op_profiles[op_key].ops:
                 outputs.update({o.key: o for o in op.outputs})
             for o in outputs.values():
                 if o.key not in self._target_chunk_keys:

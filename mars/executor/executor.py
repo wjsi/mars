@@ -40,10 +40,12 @@ logger = logging.getLogger(__name__)
 class Executor(object):
     _graph_executor_cls = LocalChunkGraphExecutor
 
-    def __init__(self, engine=None, storage=None, prefetch=False,
-                 sync_provider_type=SyncProviderType.THREAD):
+    def __init__(self, engine=None, storage=None, prefetch=False, n_parallel=None,
+                 sync_provider_type=SyncProviderType.THREAD, mock=False):
+        from ..session import Session
+
         self._engine = engine
-        self._chunk_result = storage if storage is not None else dict()
+        self._chunk_result = storage if storage is not None else LocalContext(Session.default_or_local())
         self._prefetch = prefetch
 
         # dict structure: {tileable_key -> fetch tileables}
@@ -55,7 +57,16 @@ class Executor(object):
         # synchronous provider
         self._sync_provider = get_sync_provider(sync_provider_type)
 
+        self._mock = mock
         self._mock_max_memory = 0
+
+        if not mock:
+            self._graph_executor = self._graph_executor_cls(
+                self._chunk_result, self._sync_provider, engine=self._engine, n_parallel=n_parallel)
+        else:
+            self._graph_executor = MockChunkGraphExecutor(
+                self._chunk_result, self._sync_provider, engine=self._engine, n_parallel=n_parallel,
+                mock_max_memory=self._mock_max_memory)
 
     @property
     def chunk_result(self):
@@ -95,22 +106,14 @@ class Executor(object):
         executed_keys = set()
         for t in itertools.chain(*list(self.stored_tileables.values())):
             executed_keys.update([c.key for c in t.chunks])
-        chunk_result = self._chunk_result if chunk_result is None else chunk_result
 
-        if not mock:
-            graph_executor = self._graph_executor_cls(
-                chunk_result, self._sync_provider, engine=self._engine, n_parallel=n_parallel)
-        else:
-            graph_executor = MockChunkGraphExecutor(
-                chunk_result, self._sync_provider, engine=self._engine, n_parallel=n_parallel,
-                mock_max_memory=self._mock_max_memory)
-        graph_listener = graph_executor.submit_chunk_graph(optimized_graph, keys)
+        graph_listener = self._graph_executor.submit_chunk_graph(optimized_graph, keys)
         graph_listener.wait()
-        res = [chunk_result[k] for k in keys] if retval else None
+        res = [self._chunk_result[k] for k in keys] if retval else None
 
-        if mock:
-            self._mock_max_memory = max(self._mock_max_memory, graph_executor._mock_max_memory)
-            chunk_result.clear()
+        if self._mock:
+            self._mock_max_memory = max(self._mock_max_memory, self._graph_executor._mock_max_memory)
+            self._chunk_result.clear()
         return res
 
     @enter_mode(build=True, kernel=True)
@@ -128,16 +131,13 @@ class Executor(object):
             return after_tile_data
 
         # shallow copy
-        chunk_result = self._chunk_result.copy()
         tileable_graph_builder = TileableGraphBuilder()
         tileable_graph = tileable_graph_builder.build([tileable])
         chunk_graph_builder = ChunkGraphBuilder(compose=compose,
                                                 on_tile_success=_on_tile_success)
         chunk_graph = chunk_graph_builder.build([tileable], tileable_graph=tileable_graph)
         ret = self.execute_graph(chunk_graph, result_keys, n_parallel=n_parallel or n_thread,
-                                 print_progress=print_progress, mock=mock,
-                                 chunk_result=chunk_result)
-        self._chunk_result.update(chunk_result)
+                                 print_progress=print_progress)
         return ret
 
     execute_tensor = execute_tileable
@@ -152,7 +152,10 @@ class Executor(object):
                     c._shape = chunk_result[c.key].shape
                 except AttributeError:
                     # Fuse chunk
-                    c._composed[-1]._shape = chunk_result[c.key].shape
+                    try:
+                        c._composed[-1]._shape = chunk_result[c.key].shape
+                    except AttributeError:
+                        pass
 
     def _update_tileable_and_chunk_shape(self, tileable_graph, chunk_result, failed_ops):
         for n in tileable_graph:
@@ -180,7 +183,6 @@ class Executor(object):
     def execute_tileables(self, tileables, fetch=True, n_parallel=None, n_thread=None,
                           print_progress=False, mock=False, compose=True, name=None):
         # shallow copy chunk_result, prevent from any chunk key decref
-        chunk_result = self._chunk_result.copy()
         tileables = [tileable.data if hasattr(tileable, 'data') else tileable
                      for tileable in tileables]
         tileable_keys = [t.key for t in tileables]
@@ -221,18 +223,6 @@ class Executor(object):
                     new_inps.append(inp)
             return new_inps
 
-        def _generate_fetch_if_executed(nd):
-            # node processor that if the node is executed
-            # replace it with a fetch node
-            _to_fetch = node_to_fetch  # noqa: F821
-            if nd.key not in chunk_result:
-                return nd
-            if nd in _to_fetch:
-                return _to_fetch[nd]
-            fn = build_fetch(nd).data
-            _to_fetch[nd] = fn
-            return fn
-
         def _on_tile_success(before_tile_data, after_tile_data):
             if before_tile_data.key not in tileable_keys_set:
                 return after_tile_data
@@ -262,15 +252,14 @@ class Executor(object):
         # As the chunk_result is copied, we cannot use the original context any more,
         # and if `chunk_result` is a LocalContext, it's copied into a LocalContext as well,
         # thus here just to make sure the new context is entered
-        with self._gen_local_context(chunk_result):
+        with self._gen_local_context(self._chunk_result):
             # build tileable graph
             tileable_graph_builder = _get_tileable_graph_builder(
                 node_processor=_generate_fetch_tileable,
                 inputs_selector=_skip_executed_tileables)
             tileable_graph = tileable_graph_builder.build(tileables)
             chunk_graph_builder = IterativeChunkGraphBuilder(
-                graph_cls=DAG, node_processor=_generate_fetch_if_executed,
-                compose=False, on_tile_success=_on_tile_success)
+                graph_cls=DAG, compose=False, on_tile_success=_on_tile_success)
             intermediate_result_keys = set()
             while True:
                 # build chunk graph, tile will be done during building
@@ -294,20 +283,19 @@ class Executor(object):
                 # execute chunk graph
                 self.execute_graph(chunk_graph, list(temp_result_keys),
                                    n_parallel=n_parallel or n_thread,
-                                   print_progress=print_progress, mock=mock,
-                                   chunk_result=chunk_result)
+                                   print_progress=print_progress)
 
                 # update shape of tileable and its chunks whatever it's successful or not
-                self._update_chunk_shape(chunk_graph, chunk_result)
+                self._update_chunk_shape(chunk_graph, self._chunk_result)
                 self._update_tileable_and_chunk_shape(
-                    tileable_graph, chunk_result, chunk_graph_builder.interrupted_ops)
+                    tileable_graph, self._chunk_result, chunk_graph_builder.interrupted_ops)
 
                 if chunk_graph_builder.done:
                     if len(intermediate_result_keys) > 0:
                         # failed before
                         intermediate_to_release_keys = \
                             {k for k in intermediate_result_keys
-                             if k not in result_keys and k in chunk_result}
+                             if k not in result_keys and k in self._chunk_result}
                         to_release_keys.update(intermediate_to_release_keys)
                     delattr(chunk_graph_builder, '_prev_tileable_graph')
                     break
@@ -345,14 +333,14 @@ class Executor(object):
                 if fetch:
                     concat_keys = [
                         tileable_data_to_concat_keys[tileable_optimized.get(t, t)] for t in tileables]
-                    return [chunk_result[k] for k in concat_keys]
+                    return [self._chunk_result[k] for k in concat_keys]
                 else:
                     return
             finally:
                 for to_release_key in to_release_keys:
-                    del chunk_result[to_release_key]
+                    del self._chunk_result[to_release_key]
                 self._chunk_result.update(
-                    {k: chunk_result[k] for k in result_keys if k in chunk_result})
+                    {k: self._chunk_result[k] for k in result_keys if k in self._chunk_result})
 
     execute_tensors = execute_tileables
     execute_dataframes = execute_tileables
@@ -384,7 +372,7 @@ class Executor(object):
             if key not in self.stored_tileables and not isinstance(to_fetch_tileable.op, Fetch):
                 # check if the tileable is executed before
                 raise ValueError(
-                    'Tileable object {} must be executed first before being fetched'.format(tileable.key))
+                    f'Tileable object {tileable.key} must be executed first before being fetched')
 
         # if chunk executed, fetch chunk mechanism will be triggered in execute_tileables
         result = self.execute_tileables(tileables, **kw)
