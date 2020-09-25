@@ -13,9 +13,9 @@
 # limitations under the License.
 
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
+from ..lib.adjustable_tpe import AdjustableThreadPoolExecutor
 from ..utils import classproperty
 
 try:
@@ -137,7 +137,7 @@ class EventQueue(list):
 class ThreadExecutorSyncProvider(ExecutorSyncProvider):
     @classmethod
     def thread_pool_executor(cls, n_workers):
-        return ThreadPoolExecutor(n_workers)
+        return AdjustableThreadPoolExecutor(n_workers)
 
     @classmethod
     def semaphore(cls, value):
@@ -193,7 +193,7 @@ class GeventExecutorSyncProvider(ExecutorSyncProvider):
 
 class MockThreadPoolExecutor(object):
     def __init__(self, *_):
-        self._pool = ThreadPoolExecutor(1)
+        self._pool = AdjustableThreadPoolExecutor(1)
 
     def submit(self, fn, *args, **kwargs):
         return self._pool.submit(fn, *args, **kwargs)

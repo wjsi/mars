@@ -21,9 +21,9 @@ from numbers import Integral
 
 import numpy as np
 
-from ..operands import Fetch
-from ..graph import DAG
 from ..config import options
+from ..graph import DAG
+from ..operands import Fetch
 from ..tiles import IterativeChunkGraphBuilder, ChunkGraphBuilder, get_tiled
 from ..optimizes.runtime.core import RuntimeOptimizer
 from ..optimizes.tileable_graph import tileable_optimized, OptimizeIntegratedTileableGraphBuilder
@@ -193,7 +193,6 @@ class Executor(object):
         tileable_data_to_concat_keys = weakref.WeakKeyDictionary()
         tileable_data_to_chunks = weakref.WeakKeyDictionary()
 
-        node_to_fetch = weakref.WeakKeyDictionary()
         skipped_tileables = set()
 
         def _generate_fetch_tileable(node):
@@ -412,3 +411,9 @@ class Executor(object):
                 for chunk_key in (chunk_keys & rs):
                     self._chunk_result.pop(chunk_key, None)
                 del self.stored_tileables[tileable_key]
+
+    def increase_pool_size(self):
+        self._graph_executor.increase_pool_size()
+
+    def decrease_pool_size(self):
+        self._graph_executor.decrease_pool_size()

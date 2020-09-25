@@ -41,7 +41,8 @@ class Test(TestBase):
 
         index = arr < .5
         arr2 = arr[index]
-        size_res = self.executor.execute_tensor(arr2, mock=True)
+        size_executor = ExecutorForTest(mock=True)
+        size_res = size_executor.execute_tensor(arr2)
         res = self.executor.execute_tensor(arr2)
 
         self.assertEqual(sum(s[0] for s in size_res), arr.nbytes)
@@ -272,7 +273,8 @@ class Test(TestBase):
         raw_cond = raw[0, :, 0, 0] < .5
         cond = tensor(raw[0, :, 0, 0], chunk_size=3) < .5
         arr2 = arr[10::-2, cond, None, ..., :5]
-        size_res = self.executor.execute_tensor(arr2, mock=True)
+        mock_executor = ExecutorForTest(mock=True)
+        size_res = mock_executor.execute_tensor(arr2)
         res = self.executor.execute_tensor(arr2, concat=True)[0]
 
         new_shape = list(arr2.shape)

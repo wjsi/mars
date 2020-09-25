@@ -17,8 +17,9 @@ import logging
 import sys
 from collections import deque
 
-from ..operands import Fetch, ShuffleProxy
+from ..context import get_context, ContextBase
 from ..graph import DAG
+from ..operands import Fetch, ShuffleProxy
 from .core import MockThreadPoolExecutor, OperandState
 from .analyzer import GraphAnalyzer
 from .data_tracker import DataTracker
@@ -182,24 +183,29 @@ class ChunkGraphExecutor:
             else:
                 key_to_chunks = dict((c.key, c) for c in self._graph)
                 for n in graph.topological_iter():
-                    self._graph.add_node(n)
-                    key_to_chunks[n.key] = n
+                    if n.key not in key_to_chunks:
+                        self._graph.add_node(n)
+                        new_n = key_to_chunks[n.key] = n
+                    else:
+                        new_n = key_to_chunks[n.key]
                     for pred in graph.iter_predecessors(n):
                         pred = key_to_chunks[pred.key]
-                        self._graph.add_edge(pred, n)
+                        self._graph.add_edge(pred, new_n)
             self._build_runtime_graph()
             target_chunks = [n for n in self._runtime_graph
                              if self._runtime_graph.count_successors(n) == 0]
 
-        for c in self._runtime_graph.dfs(target_chunks, visit_predicate='all', reverse=True):
+        for c in self._runtime_graph:
             try:
                 op_profile = self._op_profiles[c.op.key]
-                op_profile.ops.add(c.op)
+                op_profile.ops = set()
                 if op_profile.state in (OperandState.FINISHED, OperandState.FREED):
                     op_profile.state = OperandState.UNSCHEDULED
             except KeyError:
                 self._op_profiles[c.op.key] = OperandProfile(
-                    {c.op}, OperandState.UNSCHEDULED, set())
+                    set(), OperandState.UNSCHEDULED, set())
+        for c in self._runtime_graph:
+            self._op_profiles[c.op.key].ops.add(c.op)
 
         ops_to_run = set(n.op.key for n in target_chunks)
         listener = GraphListener(ops_to_run, self._sync_provider)
@@ -364,7 +370,12 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
             runner = getattr(op, self._method_name)
 
         try:
-            return runner(self._chunk_results, op)
+            context = get_context()
+            if context is None and isinstance(self._chunk_results, ContextBase):
+                with self._chunk_results:
+                    return runner(self._chunk_results, op)
+            else:
+                return runner(self._chunk_results, op)
         except NotImplementedError:
             for op_cls in op_runners.keys():
                 if isinstance(op, op_cls):
@@ -412,7 +423,10 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
                 future.rawlink(build_callback(op_key))
 
     def copy_data_ref(self, dest_chunk_key, src_chunk_key):
-        self._chunk_results[dest_chunk_key] = self._chunk_results[src_chunk_key]
+        try:
+            self._chunk_results[dest_chunk_key] = self._chunk_results[src_chunk_key]
+        except KeyError:
+            raise
 
     def delete_data_keys(self, chunk_keys):
         for chunk_key in chunk_keys:
@@ -420,6 +434,12 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
 
     def filter_stored_data(self, chunk_keys):
         return [k for k in chunk_keys if k in self._chunk_results]
+
+    def increase_pool_size(self):
+        self._operand_executor.increase_workers()
+
+    def decrease_pool_size(self):
+        self._operand_executor.decrease_workers()
 
 
 class MockChunkGraphExecutor(LocalChunkGraphExecutor):

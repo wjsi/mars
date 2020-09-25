@@ -209,8 +209,8 @@ class ExecutionActor(WorkerActor):
                 n.extra_params['_shapes'] = \
                     dict(((k, shuffle_key), v) for k, v in zip(n.op.to_fetch_keys, shapes))
 
-        executor = Executor(storage=size_ctx)
-        res = executor.execute_graph(graph_record.graph, graph_record.chunk_targets, mock=True)
+        executor = Executor(storage=size_ctx, mock=True)
+        res = executor.execute_graph(graph_record.graph, graph_record.chunk_targets)
 
         targets = graph_record.chunk_targets
         target_sizes = dict(zip(targets, res))

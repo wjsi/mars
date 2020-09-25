@@ -831,7 +831,7 @@ class Test(unittest.TestCase):
         np.testing.assert_allclose(expected, result)
 
     def testTensordotExecution(self):
-        size_executor = ExecutorForTest()
+        size_executor = ExecutorForTest(mock=True)
 
         a_data = np.arange(60).reshape(3, 4, 5)
         a = tensor(a_data, chunk_size=2)
@@ -840,7 +840,7 @@ class Test(unittest.TestCase):
 
         axes = ([1, 0], [0, 1])
         c = tensordot(a, b, axes=axes)
-        size_res = size_executor.execute_tensor(c, mock=True)
+        size_res = size_executor.execute_tensor(c)
         self.assertEqual(sum(s[0] for s in size_res), c.nbytes)
         self.assertEqual(sum(s[1] for s in size_res), c.nbytes)
 
@@ -918,14 +918,14 @@ class Test(unittest.TestCase):
                 input_nbytes = dict((inp.op.key, inp.nbytes) for inp in op.inputs)
                 chunk_input_nbytes[chunk_key] = sum(input_nbytes.values())
 
-            size_executor = ExecutorForTest()
+            size_executor = ExecutorForTest(mock=True)
             try:
                 chunk_sizes.clear()
                 chunk_nbytes.clear()
                 chunk_input_sizes.clear()
                 chunk_input_nbytes.clear()
                 register(TensorTensorDot, size_estimator=_tensordot_size_recorder)
-                size_executor.execute_tensor(t, mock=True)
+                size_executor.execute_tensor(t)
             finally:
                 register_default(TensorTensorDot)
 

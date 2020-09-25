@@ -46,9 +46,9 @@ def estimate_fuse_size(ctx, op):
                 dag.add_node(inp)
             dag.add_edge(inp, c)
 
-    executor = Executor(storage=size_ctx)
+    executor = Executor(storage=size_ctx, mock=True)
     output_keys = [o.key for o in op.outputs]
-    results = executor.execute_graph(dag, output_keys, mock=True, no_intermediate=True)
+    results = executor.execute_graph(dag, output_keys, no_intermediate=True)
     ctx.update(zip(output_keys, results))
 
     # update with the maximal memory cost during the whole execution

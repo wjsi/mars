@@ -105,7 +105,16 @@ class LocalSession(object):
                     kw['n_parallel'] = cpu_count()
             # set number of running cores
             self.context.set_ncores(kw['n_parallel'])
-            res = self._executor.execute_tileables(tileables, **kw)
+
+            ctx = get_context()
+            if ctx is not None:
+                yield_info = ctx.yield_execution_pool()
+
+            try:
+                res = self._executor.execute_tileables(tileables, **kw)
+            finally:
+                if ctx is not None:
+                    ctx.acquire_execution_pool(yield_info)
             return res
 
     def _update_tileable_shape(self, tileable):

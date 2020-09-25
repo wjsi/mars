@@ -912,14 +912,14 @@ class Test(TestBase):
         self.assertIsInstance(r, SERIES_TYPE)
         self.assertEqual(r.shape, (6,))
         self.assertEqual(len(r.chunks), 2)
-        self.assertEqual(r.chunks[0].op.stage, OperandStage.reduce)
+        self.assertEqual(r.chunks[0].op.stage, OperandStage.agg)
 
         r = df.memory_usage(index=False).tiles()
 
         self.assertIsInstance(r, SERIES_TYPE)
         self.assertEqual(r.shape, (5,))
         self.assertEqual(len(r.chunks), 2)
-        self.assertEqual(r.chunks[0].op.stage, OperandStage.reduce)
+        self.assertEqual(r.chunks[0].op.stage, OperandStage.agg)
 
         raw = pd.Series(np.ones(shape=500).astype('object'), name='s')
 
@@ -937,7 +937,7 @@ class Test(TestBase):
         self.assertIsInstance(r, TENSOR_TYPE)
         self.assertEqual(r.shape, ())
         self.assertEqual(len(r.chunks), 1)
-        self.assertEqual(r.chunks[0].op.stage, OperandStage.reduce)
+        self.assertEqual(r.chunks[0].op.stage, OperandStage.agg)
 
     def testRebalance(self):
         raw = pd.DataFrame(np.random.rand(10, 3), columns=list('abc'))

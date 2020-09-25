@@ -69,8 +69,11 @@ class DataTracker:
         for key in chunk_keys:
             if key in self._target_chunk_keys:
                 continue
-            track_op_keys = set(succ.op.key for c in self._key_to_chunks[key]
-                                for succ in self._graph.iter_successors(c))
+            try:
+                track_op_keys = set(succ.op.key for c in self._key_to_chunks[key]
+                                    for succ in self._graph.iter_successors(c))
+            except KeyError:
+                raise
             if key not in self._chunk_key_op_refs:
                 self._chunk_key_op_refs[key] = track_op_keys
             else:

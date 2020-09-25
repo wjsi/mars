@@ -108,8 +108,8 @@ class Test(unittest.TestCase):
             graph_add.add_node(inp_chunk)
             graph_add.add_edge(inp_chunk, add_chunk)
 
-        executor = Executor()
-        res = executor.execute_graph(graph_add, [add_chunk.key], compose=False, mock=True)[0]
+        executor = Executor(mock=True)
+        res = executor.execute_graph(graph_add, [add_chunk.key], compose=False)[0]
         self.assertEqual(res, (80000, 80000))
         self.assertEqual(executor.mock_max_memory, 80000)
 
@@ -121,8 +121,8 @@ class Test(unittest.TestCase):
 
             add_chunk = new_add_chunk
 
-        executor = Executor()
-        res = executor.execute_graph(graph_add, [add_chunk.key], compose=False, mock=True)[0]
+        executor = Executor(mock=True)
+        res = executor.execute_graph(graph_add, [add_chunk.key], compose=False)[0]
         self.assertEqual(res, (80000, 80000))
         self.assertEqual(executor.mock_max_memory, 160000)
 
@@ -130,8 +130,8 @@ class Test(unittest.TestCase):
         b = a[:, mt.newaxis, :] - a
         r = mt.triu(mt.sqrt(b ** 2).sum(axis=2))
 
-        executor = Executor()
-        res = executor.execute_tensor(r, concat=False, mock=True)
+        executor = Executor(mock=True)
+        res = executor.execute_tensor(r, concat=False)
         # larger than maximal memory size in calc procedure
         self.assertGreaterEqual(res[0][0], 800)
         self.assertGreaterEqual(executor.mock_max_memory, 8000)
@@ -155,9 +155,10 @@ class Test(unittest.TestCase):
         graph.add_node(chunk.data)
 
         executor = Executor()
+        mock_executor = Executor(mock=True)
         res = executor.execute_graph(graph, keys=[chunk.key])[0]
         np.testing.assert_array_equal(res, fake_result)
-        size = executor.execute_graph(graph, keys=[chunk.key], mock=True)[0]
+        size = mock_executor.execute_graph(graph, keys=[chunk.key])[0]
         self.assertEqual(size, fake_size)
 
         graph = DAG()

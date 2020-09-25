@@ -307,6 +307,12 @@ class LocalContext(ContextBase, dict):
     def create_lock(self):
         return self._local_session.executor._sync_provider.lock()
 
+    def yield_execution_pool(self):
+        self._local_session.executor.increase_pool_size()
+
+    def acquire_execution_pool(self, yield_info):
+        self._local_session.executor.decrease_pool_size()
+
 
 class DistributedContext(ContextBase):
     def __init__(self, scheduler_address, session_id, actor_ctx=None,

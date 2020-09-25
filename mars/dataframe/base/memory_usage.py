@@ -145,7 +145,7 @@ class DataFrameMemoryUsage(DataFrameOperand, DataFrameOperandMixin):
 
         # produce map chunks
         # allocate matrix of chunks
-        chunks_to_reduce = np.empty(shape=df.chunk_shape, dtype=np.object)
+        chunks_to_agg = np.empty(shape=df.chunk_shape, dtype=np.object)
         for c in df.chunks:
             new_op = op.copy().reset_key()
             new_op.stage = OperandStage.map
@@ -160,37 +160,37 @@ class DataFrameMemoryUsage(DataFrameOperand, DataFrameOperandMixin):
 
             new_shape = (c.shape[-1] + 1,) if c.index[-1] == 0 and op.index else (c.shape[-1],)
 
-            chunks_to_reduce[c.index] = new_op.new_chunk(
+            chunks_to_agg[c.index] = new_op.new_chunk(
                 [c], index=(c.index[-1],), dtype=output.dtype, shape=new_shape,
                 index_value=op._adapt_index(c.columns_value, c.index[-1]))
 
-        # reduce chunks using tree reduction
+        # agg chunks using tree reduction
         combine_size = options.combine_size
-        while chunks_to_reduce.shape[0] > 1:
+        while chunks_to_agg.shape[0] > 1:
             # allocate matrix of chunks
-            new_chunks_to_reduce = np.empty((ceildiv(chunks_to_reduce.shape[0], combine_size),
-                                             chunks_to_reduce.shape[1]), dtype=np.object)
-            for idx in range(0, chunks_to_reduce.shape[0], combine_size):
-                for idx2 in range(chunks_to_reduce.shape[1]):
+            new_chunks_to_agg = np.empty((ceildiv(chunks_to_agg.shape[0], combine_size),
+                                         chunks_to_agg.shape[1]), dtype=np.object)
+            for idx in range(0, chunks_to_agg.shape[0], combine_size):
+                for idx2 in range(chunks_to_agg.shape[1]):
                     new_op = op.copy().reset_key()
-                    new_op._stage = OperandStage.reduce
-                    chunks = list(chunks_to_reduce[idx:idx + combine_size, idx2])
+                    new_op._stage = OperandStage.agg
+                    chunks = list(chunks_to_agg[idx:idx + combine_size, idx2])
 
-                    new_chunks_to_reduce[idx // combine_size, idx2] = new_op.new_chunk(
+                    new_chunks_to_agg[idx // combine_size, idx2] = new_op.new_chunk(
                         chunks, index=(idx2,), dtype=output.dtype, shape=chunks[0].shape,
                         index_value=chunks[0].index_value)
 
-            chunks_to_reduce = new_chunks_to_reduce
+            chunks_to_agg = new_chunks_to_agg
 
         # handle RangeIndex at final outputs
         if op.index and is_range_index:
-            chunks_to_reduce[0, 0].op.range_index_size = df.index_value.to_pandas().memory_usage()
+            chunks_to_agg[0, 0].op.range_index_size = df.index_value.to_pandas().memory_usage()
 
         # return series with chunks and nsplits
         new_op = op.copy().reset_key()
         return new_op.new_series([df], dtype=output.dtype, shape=output.shape,
                                  index_value=output.index_value,
-                                 chunks=list(chunks_to_reduce[0, :]),
+                                 chunks=list(chunks_to_agg[0, :]),
                                  nsplits=op._adapt_nsplits(df.nsplits))
 
     @classmethod
@@ -202,7 +202,7 @@ class DataFrameMemoryUsage(DataFrameOperand, DataFrameOperandMixin):
         output = op.outputs[0]
         is_range_index = isinstance(series.index_value.value, IndexValue.RangeIndex)
 
-        chunks_to_reduce = []
+        chunks_to_agg = []
         for c in series.chunks:
             new_op = op.copy().reset_key()
             new_op.stage = OperandStage.map
@@ -211,30 +211,30 @@ class DataFrameMemoryUsage(DataFrameOperand, DataFrameOperandMixin):
             # after all computations are done
             new_op.index = op.index and not is_range_index
 
-            chunks_to_reduce.append(
+            chunks_to_agg.append(
                 new_op.new_chunk([c], index=c.index, dtype=output.dtype, shape=()))
 
-        # reduce chunks using tree reduction
+        # agg chunks using tree reduction
         combine_size = options.combine_size
-        while len(chunks_to_reduce) > 1:
-            new_chunks_to_reduce = []
-            for idx in range(0, len(chunks_to_reduce), combine_size):
+        while len(chunks_to_agg) > 1:
+            new_chunks_to_agg = []
+            for idx in range(0, len(chunks_to_agg), combine_size):
                 new_op = op.copy().reset_key()
-                new_op.stage = OperandStage.reduce
+                new_op.stage = OperandStage.agg
 
-                new_chunks_to_reduce.append(new_op.new_chunk(
-                    chunks_to_reduce[idx:idx + combine_size], shape=(), index=(0,),
+                new_chunks_to_agg.append(new_op.new_chunk(
+                    chunks_to_agg[idx:idx + combine_size], shape=(), index=(0,),
                     dtype=output.dtype))
 
-            chunks_to_reduce = new_chunks_to_reduce
+            chunks_to_agg = new_chunks_to_agg
 
         # handle RangeIndex at final outputs
         if op.index and is_range_index:
-            chunks_to_reduce[0].op.range_index_size = series.index_value.to_pandas().memory_usage()
+            chunks_to_agg[0].op.range_index_size = series.index_value.to_pandas().memory_usage()
 
         # return series with chunks
         new_op = op.copy().reset_key()
-        return new_op.new_scalar([series], dtype=output.dtype, chunks=chunks_to_reduce)
+        return new_op.new_scalar([series], dtype=output.dtype, chunks=chunks_to_agg)
 
     @classmethod
     def tile(cls, op: "DataFrameMemoryUsage"):
@@ -252,7 +252,7 @@ class DataFrameMemoryUsage(DataFrameOperand, DataFrameOperandMixin):
         # choose correct dataframe library
         xdf = cudf if op.gpu else pd
 
-        if op.stage == OperandStage.reduce:
+        if op.stage == OperandStage.agg:
             result = reduce(operator.add, (ctx[c.key] for c in op.inputs))
             if op.range_index_size is not None:
                 if hasattr(in_data, 'ndim'):

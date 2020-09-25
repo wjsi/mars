@@ -13,11 +13,13 @@
 # limitations under the License.
 
 import sys
+import time
 import unittest
 
 import pandas as pd
 import numpy as np
 
+from mars.lib.adjustable_tpe import AdjustableThreadPoolExecutor
 from mars.lib.groupby_wrapper import GroupByWrapper, wrapped_groupby
 from mars.tests.core import assert_groupby_equal
 from mars.utils import calc_data_size
@@ -105,3 +107,55 @@ class Test(unittest.TestCase):
         assert_groupby_equal(grouped, df.B.groupby(lambda x: x[-1] % 2), with_selection=True)
         self.assertEqual(grouped.shape, (8,))
         self.assertFalse(grouped.is_frame)
+
+    def testAdjustablePool(self):
+        delay_time = 1.0
+        delay_eps = delay_time / 4
+        start_times = dict()
+        end_times = dict()
+        futures = []
+
+        def work_fun(idx):
+            start_times[idx] = time.time()
+            time.sleep(delay_time)
+            end_times[idx] = time.time()
+
+        pool = AdjustableThreadPoolExecutor(1)
+
+        t1 = time.time()
+        for idx in range(4):
+            futures.append(pool.submit(work_fun, idx))
+
+        time.sleep(delay_time / 2)
+        t2 = time.time()
+
+        pool.increase_workers()
+        time.sleep(delay_eps)
+        pool.decrease_workers()
+        t3 = time.time()
+        self.assertEqual(len(pool._threads), 1)
+
+        pool.increase_workers()
+        for f in futures:
+            f.result()
+        t4 = time.time()
+        self.assertEqual(len(pool._threads), 2)
+
+        pool.decrease_workers()
+        t5 = time.time()
+        self.assertEqual(len(pool._threads), 1)
+
+        self.assertGreater(t2 - t1, delay_time / 2 - delay_eps)
+        self.assertLess(t2 - t1, delay_time / 2 + delay_eps)
+        self.assertGreater(t3 - t2, delay_time / 2 - delay_eps)
+        self.assertLess(t3 - t2, delay_time / 2 + delay_eps)
+        self.assertGreater(t4 - t3, delay_time * 3 / 2 - delay_eps)
+        self.assertLess(t4 - t3, delay_time * 3 / 2 + delay_eps)
+        self.assertLess(t5 - t4, delay_time / 2)
+
+        for idx in range(3):
+            self.assertGreater(start_times[idx + 1] - start_times[idx], delay_time / 2 - delay_eps)
+            self.assertLess(start_times[idx + 1] - start_times[idx], delay_time / 2 + delay_eps)
+
+            self.assertGreater(end_times[idx + 1] - end_times[idx], delay_time / 2 - delay_eps)
+            self.assertLess(end_times[idx + 1] - end_times[idx], delay_time / 2 + delay_eps)
