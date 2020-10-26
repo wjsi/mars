@@ -32,7 +32,9 @@ except ImportError:  # pragma: no cover
 from ..core import Entity, ExecutableTuple
 from ..lib.mmh3 import hash as mmh_hash
 from ..tensor.utils import dictify_chunk_size, normalize_chunk_sizes
-from ..utils import tokenize, sbytes
+from ..utils import tokenize, sbytes, lazy_import
+
+cudf = lazy_import('cudf', globals=globals())
 
 
 def hash_index(index, size):
@@ -98,7 +100,11 @@ def _get_range_index_step(pd_range_index):
     try:
         return pd_range_index.step
     except AttributeError:  # pragma: no cover
+        pass
+    try:  # pragma: no cover
         return pd_range_index._step
+    except AttributeError:  # pragma: no cover
+        return 1  # cudf does not support step arg
 
 
 def is_pd_range_empty(pd_range_index):
@@ -286,9 +292,9 @@ def parse_index(index_value, *args, store_data=False, key=None):
             _max_val_close=True,
             _key=key or tokenize(*args),
         ))
-    if isinstance(index_value, pd.RangeIndex):
+    if isinstance(index_value, (pd.RangeIndex, cudf.RangeIndex)):
         return IndexValue(_index_value=_serialize_range_index(index_value))
-    elif isinstance(index_value, pd.MultiIndex):
+    elif isinstance(index_value, (pd.MultiIndex, cudf.MultiIndex)):
         return IndexValue(_index_value=_serialize_multi_index(index_value))
     else:
         return IndexValue(_index_value=_serialize_index(index_value))

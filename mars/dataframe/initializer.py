@@ -17,7 +17,7 @@ import pandas as pd
 from ..core import Base, Entity, OutputType
 from ..tensor import tensor as astensor
 from ..tensor.core import TENSOR_TYPE
-from ..utils import ceildiv
+from ..utils import ceildiv, lazy_import
 from .core import DATAFRAME_TYPE, SERIES_TYPE, INDEX_TYPE, DataFrame as _Frame, \
     Series as _Series, Index as _Index
 from .datasource.dataframe import from_pandas as from_pandas_df
@@ -27,6 +27,8 @@ from .datasource.index import from_pandas as from_pandas_index, \
 from .datasource.from_tensor import dataframe_from_tensor, series_from_tensor, \
     dataframe_from_1d_tileables
 from .fetch import DataFrameFetch
+
+cudf = lazy_import('cudf', globals=globals())
 
 
 class InitializerMeta(type):
@@ -68,7 +70,10 @@ class DataFrame(_Frame, metaclass=InitializerMeta):
                                            columns=columns, gpu=gpu, sparse=sparse)
             need_repart = num_partitions is not None
         else:
-            pdf = pd.DataFrame(data, index=index, columns=columns, dtype=dtype, copy=copy)
+            if isinstance(data, cudf.DataFrame):
+                pdf = cudf.DataFrame(data, index=index, columns=columns, dtype=dtype, copy=copy)
+            else:
+                pdf = pd.DataFrame(data, index=index, columns=columns, dtype=dtype, copy=copy)
             if num_partitions is not None:
                 chunk_size = ceildiv(len(pdf), num_partitions)
             df = from_pandas_df(pdf, chunk_size=chunk_size, gpu=gpu, sparse=sparse)
@@ -103,7 +108,10 @@ class Series(_Series, metaclass=InitializerMeta):
                 series = data
             need_repart = num_partitions is not None
         else:
-            pd_series = pd.Series(data, index=index, dtype=dtype, name=name, copy=copy)
+            if isinstance(data, cudf.Series):
+                pd_series = cudf.Series(data, index=index, dtype=dtype, name=name, copy=copy)
+            else:
+                pd_series = pd.Series(data, index=index, dtype=dtype, name=name, copy=copy)
             if num_partitions is not None:
                 chunk_size = ceildiv(len(pd_series), num_partitions)
             series = from_pandas_series(pd_series, chunk_size=chunk_size, gpu=gpu, sparse=sparse)
@@ -137,7 +145,7 @@ class Index(_Index, metaclass=InitializerMeta):
                 index = from_tileable_index(data, dtype=dtype, name=name)
                 need_repart = num_partitions is not None
             else:
-                if not isinstance(data, pd.Index):
+                if not isinstance(data, (pd.Index, cudf.Index)):
                     name = name if name is not None else getattr(data, 'name', None)
                     pd_index = pd.Index(data=data, dtype=dtype, copy=copy, name=name,
                                         tupleize_cols=tupleize_cols)

@@ -102,6 +102,16 @@ cdef class Tokenizer:
     def register(self, cls, handler):
         self._handlers[cls] = handler
 
+    cpdef get_handler(self, object_type):
+        try:
+            return self._handlers[object_type]
+        except KeyError:
+            for clz in object_type.__mro__:
+                if clz in self._handlers:
+                    handler = self._handlers[object_type] = self._handlers[clz]
+                    return handler
+            return None
+
     cdef inline tokenize(self, object obj):
         object_type = type(obj)
         try:
@@ -113,10 +123,16 @@ cdef class Tokenizer:
             if callable(obj):
                 if PDTick is not None and not isinstance(obj, PDTick):
                     return tokenize_function(obj)
-            for clz in object_type.__mro__:
-                if clz in self._handlers:
-                    handler = self._handlers[object_type] = self._handlers[clz]
-                    return handler(obj)
+            handler = self.get_handler(object_type)
+            if handler is not None:
+                return handler(obj)
+
+            if type(obj).__module__.startswith('cu') and hasattr(obj, 'to_pandas'):
+                pd_obj = obj.to_pandas()
+                handler = self.get_handler(type(pd_obj))
+                self._handlers[type(obj)] = lambda x: handler(x.to_pandas())
+                return handler(obj.to_pandas())
+
             try:
                 return cloudpickle.dumps(obj)
             except:
