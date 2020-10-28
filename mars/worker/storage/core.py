@@ -33,6 +33,7 @@ class DataStorageDevice(Enum):
     SHARED_MEMORY = 2
     DISK = 3
     VINEYARD = 4
+    COALESCE = 5
 
     def __lt__(self, other):
         return self.value < other.value

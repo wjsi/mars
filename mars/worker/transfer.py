@@ -96,7 +96,7 @@ class SenderActor(WorkerActor):
         :param timeout: timeout of data sending
         :param callback: promise callback
         """
-        chunk_keys = list(chunk_keys)
+        chunk_keys = self.storage_client.reorder_data_keys(session_id, chunk_keys)
         target_endpoints = list(target_endpoints)
         block_size = block_size or options.worker.transfer_block_size
 

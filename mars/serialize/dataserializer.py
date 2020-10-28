@@ -139,6 +139,7 @@ SerialType._tags = {  # noqa: E305
 
 
 compressors = {
+    CompressType.NONE: lambda x: x,
     CompressType.LZ4: lz4_compress,
     CompressType.GZIP: gz_compress,
 }
@@ -148,6 +149,7 @@ compressobjs = {
     CompressType.GZIP: gz_compressobj,
 }
 decompressors = {
+    CompressType.NONE: lambda x: x,
     CompressType.LZ4: lz4_decompress,
     CompressType.GZIP: gz_decompress,
 }
@@ -289,6 +291,19 @@ def dumps(obj, *, serial_type=None, compress=None, pickle_protocol=None):
     sio = BytesIO()
     dump(obj, sio, serial_type=serial_type, compress=compress, pickle_protocol=pickle_protocol)
     return sio.getvalue()
+
+
+def copy_to(target_file, serialized, *, compress=None):
+    mv = memoryview(serialized)
+    header = read_file_header(mv)
+    new_header = file_header(header.type, header.version, header.nbytes, compress)
+
+    write_file_header(target_file, new_header)
+    if header.compress == compress:
+        target_file.write(mv[HEADER_LENGTH:])
+    else:
+        raw_data = decompressors[header.compress](mv[HEADER_LENGTH:])
+        target_file.write(compressors[header.compress](raw_data))
 
 
 def _wrap_deprecates(fun):

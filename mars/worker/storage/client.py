@@ -111,6 +111,25 @@ class StorageClient(object):
         handler = self.get_storage_handler(cur_device)
         return action(handler, data_keys).catch(_handle_err)
 
+    def reorder_data_keys(self, session_id, data_keys):
+        stored_dev_lists = self._manager_ref.get_data_locations(session_id, data_keys)
+        dev_to_keys = defaultdict(list)
+        for key, devs in zip(data_keys, stored_dev_lists):
+            if not devs:  # pragma: no cover
+                raise KeyError(key)
+            dev_to_keys[next(iter(devs))].append(key)
+        for dev, keys in dev_to_keys.items():
+            handler = self.get_storage_handler(dev)
+            try:
+                dev_to_keys[dev] = handler.reorder_data_keys(session_id, keys)
+            except AttributeError:
+                pass
+        sorted_groups = sorted(dev_to_keys.items(), key=lambda tp: tp[0])
+        result = []
+        for _dev, group in sorted_groups:
+            result.extend(group)
+        return result
+
     def create_reader(self, session_id, data_key, source_devices, packed=False,
                       packed_compression=None, _promise=True):
         """

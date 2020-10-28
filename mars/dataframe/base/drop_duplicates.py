@@ -23,7 +23,7 @@ from ...serialize import KeyField, AnyField, BoolField, StringField, Int32Field
 from ...tiles import TilesError
 from ...utils import check_chunks_unknown_shape, ceildiv, get_shuffle_input_keys_idxes, lazy_import
 from ..initializer import DataFrame as asdataframe
-from ..operands import DataFrameMapReduceOperand, DataFrameOperandMixin, \
+from ..operands import MapReduceOperand, DataFrameOperandMixin, \
     DataFrameShuffleProxy, OutputType
 from ..merge import DataFrameConcat
 from ..utils import parse_index, hash_dataframe_on, gen_unknown_index_value, standardize_range_index
@@ -31,7 +31,7 @@ from ..utils import parse_index, hash_dataframe_on, gen_unknown_index_value, sta
 cudf = lazy_import('cudf', globals=globals())
 
 
-class DataFrameDropDuplicates(DataFrameMapReduceOperand, DataFrameOperandMixin):
+class DataFrameDropDuplicates(MapReduceOperand, DataFrameOperandMixin):
     _op_type_ = opcodes.DROP_DUPLICATES
 
     _input = KeyField('input')

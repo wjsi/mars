@@ -264,9 +264,6 @@ class DataFrameShuffleProxy(ShuffleProxy, DataFrameOperandMixin):
         super().__init__(_sparse=sparse, _output_types=output_types, **kwargs)
 
 
-DataFrameMapReduceOperand = MapReduceOperand
-
-
 class DataFrameFuseChunkMixin(FuseChunkMixin, DataFrameOperandMixin):
     __slots__ = ()
 
