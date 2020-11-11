@@ -15,7 +15,6 @@
 import logging
 from collections import deque
 
-from ... import promise
 from ...config import options
 from ...utils import log_unhandled
 from ..utils import WorkerActor
@@ -52,55 +51,51 @@ class IORunnerActor(WorkerActor):
             dispatch_ref = self.ctx.actor_ref(DispatchActor.default_uid())
             dispatch_ref.register_free_slot(self.uid, 'iorunner')
 
-    @promise.reject_on_exception
     @log_unhandled
-    def load_from(self, dest_device, session_id, data_keys, src_device, callback):
+    def load_from(self, dest_device, session_id, data_keys, src_device):
         logger.debug('Copying %r from %s into %s submitted in %s',
                      data_keys, src_device, dest_device, self.uid)
-        self._work_items.append((dest_device, session_id, data_keys, src_device, False, callback))
+        self._work_items.append((dest_device, session_id, data_keys, src_device, False, None))
         if len(self._cur_work_items) < self._io_parallel_num:
-            self._submit_next()
+            yield from self.submit_next()
 
-    def lock(self, session_id, data_keys, callback):
+    def lock(self, session_id, data_keys):
         logger.debug('Requesting lock for %r on %s', data_keys, self.uid)
-        self._work_items.append((None, session_id, data_keys, None, True, callback))
+        future = self.ctx.async_result()
+        self._work_items.append((None, session_id, data_keys, None, True, future))
         if len(self._cur_work_items) < self._io_parallel_num:
-            self._submit_next()
+            yield from self.submit_next()
+        return future
 
     def unlock(self, work_item_id):
         data_keys = self._lock_work_items.pop(work_item_id)[2]
         logger.debug('%s unlocked for %r on work item %d', self.uid, data_keys, work_item_id)
         if work_item_id is not None:  # pragma: no branch
             self._cur_work_items.pop(work_item_id)
-            self._submit_next()
+            yield from self.submit_next()
 
     @log_unhandled
-    def _submit_next(self):
+    def submit_next(self):
         if not self._work_items:
             return
         work_item_id = self._max_work_item_id
         self._max_work_item_id += 1
-        dest_device, session_id, data_keys, src_device, is_lock, cb = \
+        dest_device, session_id, data_keys, src_device, is_lock, future = \
             self._cur_work_items[work_item_id] = self._work_items.popleft()
 
         if is_lock:
             self._lock_work_items[work_item_id] = self._cur_work_items[work_item_id]
-            self.tell_promise(cb, work_item_id)
+            future.set(work_item_id)
             logger.debug('%s locked for %r on work item %d', self.uid, data_keys, work_item_id)
             return
-
-        @log_unhandled
-        def _finalize(*exc):
-            del self._cur_work_items[work_item_id]
-            if not exc:
-                self.tell_promise(cb)
-            else:
-                self.tell_promise(cb, *exc, _accept=False)
-            self._submit_next()
 
         logger.debug('Start copying %r from %s into %s in %s',
                      data_keys, src_device, dest_device, self.uid)
         src_handler = self.storage_client.get_storage_handler(src_device)
         dest_handler = self.storage_client.get_storage_handler(dest_device)
-        dest_handler.load_from(session_id, data_keys, src_handler) \
-            .then(lambda *_: _finalize(), _finalize)
+
+        try:
+            yield dest_handler.load_from(session_id, data_keys, src_handler)
+            del self._cur_work_items[work_item_id]
+        finally:
+            self.ref().submit_next(_tell=True)

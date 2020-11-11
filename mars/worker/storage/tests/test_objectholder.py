@@ -45,12 +45,12 @@ class MockIORunnerActor(WorkerActor):
         dispatch_ref = self.ctx.actor_ref(DispatchActor.default_uid())
         dispatch_ref.register_free_slot(self.uid, 'iorunner')
 
-    def load_from(self, dest_device, session_id, data_keys, src_device, callback):
+    def load_from(self, dest_device, session_id, data_keys, src_device):
         session_data_key = (session_id, data_keys[0])
-        self._work_items[session_data_key] = (dest_device, src_device, callback)
+        self._work_items[session_data_key] = (dest_device, src_device)
         if session_data_key in self._submissions:
             exc_info = self._submissions[session_data_key]
-            self.submit_item(session_id, data_keys[0], exc_info)
+            yield from self.submit_item(session_id, data_keys[0], exc_info)
 
     def submit_item(self, session_id, data_key, exc_info=None):
         try:
@@ -60,13 +60,11 @@ class MockIORunnerActor(WorkerActor):
             return
 
         if exc_info is not None:
-            self.tell_promise(cb, *exc_info, _accept=False)
+            raise exc_info[1].with_traceback(exc_info[2]) from None
         else:
             src_handler = self.storage_client.get_storage_handler(src_device)
             dest_handler = self.storage_client.get_storage_handler(dest_device)
-            dest_handler.load_from(session_id, [data_key], src_handler) \
-                .then(lambda *_: self.tell_promise(cb),
-                      lambda *exc: self.tell_promise(cb, *exc, _accept=False))
+            yield dest_handler.load_from(session_id, [data_key], src_handler)
 
     def get_request_keys(self):
         return [tp[1] for tp in self._work_items.keys()]

@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import typing
+
 import numpy as np
 
 from ..._utils cimport to_str
@@ -50,3 +52,19 @@ def create_actor_ref(*args, **kwargs):
         raise ValueError('Actor uid should be provided')
 
     return ActorRef(address, uid)
+
+
+cdef set _isgenerator_typecache = set()
+
+
+cdef bint isgenerator(obj):
+    cdef type tp = type(obj)
+    if tp in _isgenerator_typecache:
+        return True
+
+    if isinstance(obj, typing.Generator):
+        if len(_isgenerator_typecache) < 100:
+            _isgenerator_typecache.add(tp)
+        return True
+    else:
+        return False

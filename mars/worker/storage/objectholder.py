@@ -86,9 +86,8 @@ class ObjectHolderActor(WorkerActor):
     def get_size_limit(self):
         return self._size_limit
 
-    @promise.reject_on_exception
     @log_unhandled
-    def spill_size(self, size, multiplier=1, callback=None):
+    def spill_size(self, size, multiplier=1):
         if not self._spill_devices:  # pragma: no cover
             raise SpillNotConfigured
 
@@ -161,8 +160,6 @@ class ObjectHolderActor(WorkerActor):
                          self.uid, request_size, spill_ref_key)
 
             self._plasma_client.evict(request_size)
-            if callback:
-                self.tell_promise(callback)
 
     @log_unhandled
     def _internal_put_object(self, session_id, data_key, obj, size):

@@ -14,12 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import weakref
-import sys
+import itertools
 import pickle
 import random
 import struct
-import itertools
+import sys
+import weakref
 from collections import OrderedDict
 
 import gevent
@@ -32,6 +32,7 @@ import gevent.server
 import gevent.subprocess
 import gevent.fileobject
 import gevent.threadpool
+from gevent.event import AsyncResult
 from gevent._tblib import _init as gevent_init_tblib
 
 from ...lib import gipc
@@ -46,7 +47,7 @@ from .messages cimport pack_send_message, pack_tell_message, pack_create_actor_m
     unpack_message_type_value, unpack_message_type, unpack_message_id, read_remote_message, \
     get_index, MessageType
 from .messages import write_remote_message
-from .utils cimport new_actor_id
+from .utils cimport new_actor_id, isgenerator
 from .utils import create_actor_ref
 
 gevent_init_tblib()
@@ -86,12 +87,47 @@ cdef class ActorExecutionContext:
     cpdef object fire_run(self):
         cdef MessageContext message_ctx
 
+        gen = future = None
         with self.lock:
             message_ctx = self.inbox.get()
             actor = self.actor()
 
             try:
                 res = actor.on_receive(message_ctx.message)
+                if isgenerator(res):
+                    gen = res
+                elif isinstance(res, AsyncResult):
+                    future = res
+                else:
+                    message_ctx.async_result.set_result(res)
+                    return res
+            except:
+                t, ex, tb = sys.exc_info()
+                message_ctx.async_result.set_exception(ex, exc_info=(t, ex, tb))
+                raise
+
+        if gen is not None:
+            try:
+                res = None
+                while True:
+                    with self.lock:
+                        res = gen.send(res)
+                    if isinstance(res, AsyncResult):
+                        res = res.result()
+            except StopIteration as si:
+                if not isinstance(si.value, AsyncResult):
+                    message_ctx.async_result.set_result(si.value)
+                    return si.value
+                else:
+                    future = si.value
+            except:
+                t, ex, tb = sys.exc_info()
+                message_ctx.async_result.set_exception(ex, exc_info=(t, ex, tb))
+                raise
+
+        if future is not None:  # pragma: no branch
+            try:
+                res = future.result()
                 message_ctx.async_result.set_result(res)
                 return res
             except:
@@ -203,6 +239,10 @@ cdef class ActorContext:
              bint wait=True, object callback=None):
         return self._comm.tell(actor_ref, message, delay=delay,
                                wait=wait, callback=callback)
+
+    @staticmethod
+    def async_result():
+        return gevent.event.AsyncResult()
 
     @staticmethod
     def event():

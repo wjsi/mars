@@ -16,3 +16,4 @@
 
 
 cpdef bytes new_actor_id()
+cdef bint isgenerator(obj)

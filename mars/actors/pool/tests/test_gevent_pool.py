@@ -66,6 +66,11 @@ class DummyActor(Actor):
             raise ValueError('value < 0')
         self.value = value
 
+    def _send_yield(self, message):
+        actor_ref = self.ctx.actor_ref(message[1])
+        result = yield actor_ref.send(message[2:], wait=False)
+        return result
+
     def on_receive(self, message):  # noqa: C901
         if message[0] == 'add':
             if not isinstance(message[1], int):
@@ -104,6 +109,8 @@ class DummyActor(Actor):
         elif message[0] == 'send':
             actor_ref = self.ctx.actor_ref(message[1])
             return actor_ref.send(message[2:])
+        elif message[0] == 'send_yield':
+            return self._send_yield(message)
         elif message[0] == 'send_async':
             actor_ref = self.ctx.actor_ref(message[1])
             future = actor_ref.send(message[2:], wait=False)
@@ -286,6 +293,8 @@ class Test(unittest.TestCase):
             ref3 = pool.actor_ref(future.result())
             future2 = ref1.send(('send_async', ref3, 'add', 3), wait=False)
             self.assertEqual(future2.result(), 5)
+            future3 = ref1.send(('send_yield', ref3, 'add', 5), wait=False)
+            self.assertEqual(future3.result(), 10)
 
     def testLocalSendError(self):
         with create_actor_pool(n_process=1, backend='gevent') as pool:
@@ -305,6 +314,8 @@ class Test(unittest.TestCase):
             ref2 = pool.create_actor(DummyActor, 2)
             with self.assertRaises(TypeError):
                 ref1.send(('send_async', ref2, 'add', 1.0))
+            with self.assertRaises(TypeError):
+                ref1.send(('send_yield', ref2, 'add', 1.0))
             with self.assertRaises(ActorNotExist):
                 pool.actor_ref('fake_uid').send(('add', 1), wait=False).result()
 
@@ -477,6 +488,8 @@ class Test(unittest.TestCase):
             ref3 = pool.actor_ref(future.result())
             future2 = ref1.send(('send_async', ref3, 'add', 3), wait=False)
             self.assertEqual(future2.result(), 5)
+            future2 = ref1.send(('send_yield', ref3, 'add', 5), wait=False)
+            self.assertEqual(future2.result(), 10)
 
     def testProcessSendError(self):
         with create_actor_pool(n_process=2, distributor=DummyDistributor(2),
@@ -497,6 +510,8 @@ class Test(unittest.TestCase):
             ref2 = pool.create_actor(DummyActor, 2)
             with self.assertRaises(TypeError):
                 ref1.send(('send_async', ref2, 'add', 1.0))
+            with self.assertRaises(TypeError):
+                ref1.send(('send_yield', ref2, 'add', 1.0))
             with self.assertRaises(ActorNotExist):
                 pool.actor_ref('fake_uid').send(('add', 1), wait=False).result()
 
@@ -905,6 +920,8 @@ class Test(unittest.TestCase):
             ref3 = client.actor_ref(future.result())
             future2 = ref1.send(('send_async', ref3, 'add', 3), wait=False)
             self.assertEqual(future2.result(), 5)
+            future3 = ref1.send(('send_yield', ref3, 'add', 5), wait=False)
+            self.assertEqual(future3.result(), 10)
 
             # test async error
             ref1 = client.create_actor(DummyActor, 1, address=addr)
@@ -913,6 +930,8 @@ class Test(unittest.TestCase):
             ref2 = client.create_actor(DummyActor, 2, address=addr)
             with self.assertRaises(TypeError):
                 ref1.send(('send_async', ref2, 'add', 1.0))
+            with self.assertRaises(TypeError):
+                ref1.send(('send_yield', ref2, 'add', 1.0))
             with self.assertRaises(ActorNotExist):
                 client.actor_ref('fake_uid', address=addr).send(('add', 1), wait=False).result()
 
@@ -940,6 +959,8 @@ class Test(unittest.TestCase):
             ref3 = client.actor_ref(future.result())
             future2 = ref1.send(('send_async', ref3, 'add', 3), wait=False)
             self.assertEqual(future2.result(), 5)
+            future3 = ref1.send(('send_yield', ref3, 'add', 5), wait=False)
+            self.assertEqual(future3.result(), 10)
 
             # test async error
             ref1 = client.create_actor(DummyActor, 1, address=addr)
@@ -948,6 +969,8 @@ class Test(unittest.TestCase):
             ref2 = client.create_actor(DummyActor, 2, address=addr)
             with self.assertRaises(TypeError):
                 ref1.send(('send_async', ref2, 'add', 1.0))
+            with self.assertRaises(TypeError):
+                ref1.send(('send_yield', ref2, 'add', 1.0))
             with self.assertRaises(ActorNotExist):
                 client.actor_ref('fake_uid', address=addr).send(('add', 1), wait=False).result()
 
@@ -977,12 +1000,16 @@ class Test(unittest.TestCase):
                 ref3 = client.actor_ref(future.result())
                 future2 = ref1.send(('send_async', ref3, 'add', 3), wait=False)
                 self.assertEqual(future2.result(), 5)
+                future3 = ref1.send(('send_yield', ref3, 'add', 5), wait=False)
+                self.assertEqual(future3.result(), 10)
 
                 # test async error
                 ref1 = client.create_actor(DummyActor, 1, address=addr1)
                 with self.assertRaises(TypeError):
                     ref1.send(('add', 1.0), wait=False).result()
                 ref2 = client.create_actor(DummyActor, 2, address=addr2)
+                with self.assertRaises(TypeError):
+                    ref1.send(('send_async', ref2, 'add', 1.0))
                 with self.assertRaises(TypeError):
                     ref1.send(('send_async', ref2, 'add', 1.0))
                 with self.assertRaises(ActorNotExist):
@@ -1014,6 +1041,8 @@ class Test(unittest.TestCase):
                 ref3 = client.actor_ref(future.result())
                 future2 = ref1.send(('send_async', ref3, 'add', 3), wait=False)
                 self.assertEqual(future2.result(), 5)
+                future3 = ref1.send(('send_yield', ref3, 'add', 5), wait=False)
+                self.assertEqual(future3.result(), 10)
 
                 # test async error
                 ref1 = client.create_actor(DummyActor, 1, address=addr1)
@@ -1022,6 +1051,8 @@ class Test(unittest.TestCase):
                 ref2 = client.create_actor(DummyActor, 2, address=addr2)
                 with self.assertRaises(TypeError):
                     ref1.send(('send_async', ref2, 'add', 1.0))
+                with self.assertRaises(TypeError):
+                    ref1.send(('send_yield', ref2, 'add', 1.0))
                 with self.assertRaises(ActorNotExist):
                     client.actor_ref('fake_uid', address=addr1).send(('add', 1), wait=False).result()
 
@@ -1051,6 +1082,8 @@ class Test(unittest.TestCase):
                 ref3 = client.actor_ref(future.result())
                 future2 = ref1.send(('send_async', ref3, 'add', 3), wait=False)
                 self.assertEqual(future2.result(), 5)
+                future3 = ref1.send(('send_yield', ref3, 'add', 5), wait=False)
+                self.assertEqual(future3.result(), 10)
 
                 # test async error
                 ref1 = client.create_actor(DummyActor, 1, address=addr1)
@@ -1059,6 +1092,8 @@ class Test(unittest.TestCase):
                 ref2 = client.create_actor(DummyActor, 2, address=addr2)
                 with self.assertRaises(TypeError):
                     ref1.send(('send_async', ref2, 'add', 1.0))
+                with self.assertRaises(TypeError):
+                    ref1.send(('send_yield', ref2, 'add', 1.0))
                 with self.assertRaises(ActorNotExist):
                     client.actor_ref('fake_uid', address=addr1).send(('add', 1), wait=False).result()
 
@@ -1088,6 +1123,8 @@ class Test(unittest.TestCase):
                 ref3 = client.actor_ref(future.result())
                 future2 = ref1.send(('send_async', ref3, 'add', 3), wait=False)
                 self.assertEqual(future2.result(), 5)
+                future3 = ref1.send(('send_yield', ref3, 'add', 5), wait=False)
+                self.assertEqual(future3.result(), 10)
 
                 # test async error
                 ref1 = client.create_actor(DummyActor, 1, address=addr1)
@@ -1096,6 +1133,8 @@ class Test(unittest.TestCase):
                 ref2 = client.create_actor(DummyActor, 2, address=addr2)
                 with self.assertRaises(TypeError):
                     ref1.send(('send_async', ref2, 'add', 1.0))
+                with self.assertRaises(TypeError):
+                    ref1.send(('send_yield', ref2, 'add', 1.0))
                 with self.assertRaises(ActorNotExist):
                     client.actor_ref('fake_uid', address=addr1).send(('add', 1), wait=False).result()
 
