@@ -13,90 +13,79 @@
 # limitations under the License.
 
 import logging
+import typing
 
 from ..graph import DAG
-from ..operands import VirtualOperand
+from ..operands import VirtualOperand, ShuffleProxy
 
 logger = logging.getLogger(__name__)
 
 
+class TrackNode:
+    __slots__ = 'ref_keys', 'is_target'
+
+    def __init__(self, ref_keys=None, is_target=False):
+        self.ref_keys = set(ref_keys or ())
+        self.is_target = is_target
+
+
 class DataTracker:
+    _key_to_node: typing.Dict[str, TrackNode]
+
     def __init__(self):
-        self._graph = DAG()
-        self._key_to_chunks = dict()
-        self._chunk_key_op_refs = dict()
-        self._target_chunk_keys = set()
+        self._key_to_node = dict()
+        self._target_keys = set()
 
     def __contains__(self, item):
-        return item in self._chunk_key_op_refs
+        return item in self._key_to_node
 
     @property
     def tracked_keys(self):
-        return set(self._chunk_key_op_refs.keys())
+        return set(self._key_to_node.keys())
 
-    def update_graph(self, new_graph, new_target_chunk_keys):
-        ref_chunks = set()
+    def update_graph(self, new_graph: DAG, new_target_chunk_keys: set):
+        self._target_keys = new_target_chunk_keys
         for chunk in new_graph:
-            if chunk.key in self._chunk_key_op_refs:
-                ref_chunks.add(chunk)
-            elif chunk.key in self._target_chunk_keys and chunk.key not in new_target_chunk_keys:
-                ref_chunks.add(chunk)
-                self._chunk_key_op_refs[chunk.key] = set()
-
-        for chunk in ref_chunks:
-            for succ in new_graph.iter_successors(chunk):
-                self._chunk_key_op_refs[chunk.key].add(succ.op.key)
-
-        for key in new_target_chunk_keys:
-            self._chunk_key_op_refs.pop(key, None)
-
-        self._graph = new_graph
-        self._target_chunk_keys = set(new_target_chunk_keys)
-
-        key_to_chunks = dict()
-        for c in self._graph:
             try:
-                chunks_set = key_to_chunks[c.key]
+                node = self._key_to_node[chunk.key]
             except KeyError:
-                chunks_set = key_to_chunks[c.key] = set()
-            chunks_set.add(c)
-        self._key_to_chunks = key_to_chunks
-
-    def add_tracks(self, chunks):
-        ref_counts = dict()
-        chunk_keys = set(c.key for c in chunks)
-
-        for key in chunk_keys:
-            if key in self._target_chunk_keys:
                 continue
+            node.ref_keys = \
+                set(succ.key for succ in new_graph.iter_successors(chunk))
+            node.is_target = chunk.key in self._target_keys
+
+    def add_track(self, graph: DAG, chunk):
+        keys_to_delete = []
+
+        if isinstance(chunk.op, VirtualOperand):
+            return []
+
+        successors = graph.successors(chunk)
+        if len(successors) == 1 and isinstance(successors[0].op, ShuffleProxy):
+            return []
+
+        if chunk.key not in self._target_keys and len(successors) == 0:
+            keys_to_delete.append(chunk.key)
+
+        self._key_to_node[chunk.key] = TrackNode(
+            [succ.key for succ in successors], chunk.key in self._target_keys,
+        )
+        for pred_chunk in graph.iter_predecessors(chunk):
             try:
-                track_op_keys = set(succ.op.key for c in self._key_to_chunks[key]
-                                    for succ in self._graph.iter_successors(c))
+                pred_node = self._key_to_node[pred_chunk.key]
             except KeyError:
-                raise
-            if key not in self._chunk_key_op_refs:
-                self._chunk_key_op_refs[key] = track_op_keys
-            else:
-                self._chunk_key_op_refs[key] |= track_op_keys
-            ref_counts[key] = len(self._chunk_key_op_refs[key])
+                continue
 
+            if pred_node.is_target:
+                continue
+            if all(succ_key in self._key_to_node for succ_key in pred_node.ref_keys):
+                del self._key_to_node[pred_chunk.key]
+                keys_to_delete.append(pred_chunk.key)
+
+        return keys_to_delete
+
+    def remove_tracks(self, chunk_keys):
+        logger.warning('UNTRACK %s', chunk_keys)
         for key in chunk_keys:
-            if not self._chunk_key_op_refs.get(key):
-                self._chunk_key_op_refs.pop(key, None)
-
-        return ref_counts
-
-    def decref(self, ops):
-        data_to_remove = set()
-        for op in ops:
-            for c in (op.inputs or ()):
-                if c.key not in self._chunk_key_op_refs or c not in self._graph:
-                    continue
-                if isinstance(c.op, VirtualOperand):
-                    continue
-                ref_set = self._chunk_key_op_refs[c.key]
-                ref_set.difference_update((op.key,))
-                if not ref_set:
-                    self._chunk_key_op_refs.pop(c.key, None)
-                    data_to_remove.add(c.key)
-        return data_to_remove
+            self._key_to_node.pop(key, None)
+        self._target_keys.difference_update(chunk_keys)

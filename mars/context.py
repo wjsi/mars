@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import logging
 import os
 import random
 import string
@@ -25,6 +26,7 @@ from typing import List, Dict, Optional
 import numpy as np
 
 
+logger = logging.getLogger(__name__)
 _context_factory = threading.local()
 
 

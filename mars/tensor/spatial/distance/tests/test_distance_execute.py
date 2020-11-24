@@ -180,7 +180,7 @@ class Test(unittest.TestCase):
             np.testing.assert_array_equal(result, expected)
 
     @unittest.skipIf(distance.cdist is None, 'scipy not installed')
-    def testSqureFormExecution(self):
+    def testSquareFormExecution(self):
         from scipy.spatial.distance import pdist as sp_pdist, \
             squareform as sp_squareform
 

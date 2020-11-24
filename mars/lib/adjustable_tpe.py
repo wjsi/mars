@@ -6,13 +6,19 @@
 __author__ = 'Brian Quinlan (brian@sweetapp.com)'
 
 import atexit
-from concurrent.futures import BrokenExecutor, Executor, Future
+from concurrent.futures import Executor, Future
 import itertools
 import logging
 import queue
 import threading
 import weakref
 import os
+
+try:
+    from concurrent.futures import BrokenExecutor
+except ImportError:
+    class BrokenExecutor(RuntimeError):
+        pass
 
 LOGGER = logging.getLogger(__name__)
 

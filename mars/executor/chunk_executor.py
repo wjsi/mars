@@ -15,11 +15,13 @@
 import itertools
 import logging
 import sys
+import datetime
+import weakref
 from collections import deque
 
 from ..context import get_context, ContextBase
 from ..graph import DAG
-from ..operands import Fetch, ShuffleProxy
+from ..operands import Fetch, ShuffleProxy, OperandStage
 from .core import MockThreadPoolExecutor, OperandState
 from .analyzer import GraphAnalyzer
 from .data_tracker import DataTracker
@@ -38,20 +40,20 @@ logger = logging.getLogger(__name__)
 
 
 class GraphListener:
-    def __init__(self, op_keys, sync_provider=None):
-        self._op_keys = set(op_keys)
+    def __init__(self, chunk_keys, sync_provider=None):
+        self._chunk_keys = set(chunk_keys)
         self._finished_keys = set()
         self._sync_provider = sync_provider
         self._event = sync_provider.event()
         self._exc_info = None
 
-        if not self._op_keys:
+        if not self._chunk_keys:
             self._event.set()
 
-    def finish_operand(self, op_key, exc_info=None):
-        self._finished_keys.add(op_key)
+    def finish_chunks(self, chunk_keys, exc_info=None):
+        self._finished_keys.update(c for c in chunk_keys if c in self._chunk_keys)
         self._exc_info = self._exc_info or exc_info
-        if exc_info is not None or self._finished_keys == self._op_keys:
+        if exc_info is not None or self._finished_keys == self._chunk_keys:
             self._event.set()
 
     def wait(self, timeout=None):
@@ -82,14 +84,14 @@ class OperandProfile:
     __slots__ = 'ops', 'state', 'is_target', 'listeners'
 
     def __init__(self, ops=None, state=None, listeners=None):
-        self.ops = ops or set()
+        self.ops = ops or weakref.WeakSet()
         self.state = state or OperandState.UNSCHEDULED
         self.is_target = False
         self.listeners = listeners or set()
 
 
 class ChunkGraphExecutor:
-    def __init__(self, sync_provider, engine=None):
+    def __init__(self, sync_provider, data_tracker, engine=None):
         self._graph = DAG()
         self._runtime_graph = DAG()
         self._target_chunk_keys = set()
@@ -101,7 +103,7 @@ class ChunkGraphExecutor:
 
         self._op_profiles = dict()  # type: dict[str, OperandProfile]
 
-        self._data_tracker = DataTracker()
+        self._data_tracker = data_tracker or DataTracker()
 
     def _order_starts(self, starts):
         visited = set()
@@ -131,12 +133,12 @@ class ChunkGraphExecutor:
             if not stack and starts:
                 stack.appendleft(starts.popleft())
 
-    def _notify_op_listeners(self, op_key, exc_info=None):
+    def _notify_chunk_listeners(self, op_key, chunk_keys, exc_info=None):
         op_profile = self._op_profiles[op_key]
         if not op_profile.is_target:
             return
         for listener in op_profile.listeners:
-            listener.finish_operand(op_key, exc_info=exc_info)
+            listener.finish_chunks(chunk_keys, exc_info=exc_info)
 
     def _collect_initial_outputs(self, graph):
         ops = []
@@ -145,26 +147,46 @@ class ChunkGraphExecutor:
                 ops.append(c)
         return ops
 
+    def _truncate_graph(self):
+        fixed_keys = self._data_tracker.tracked_keys | self._target_chunk_keys
+
+        def _check_removable(op):
+            for c in op.outputs:
+                if c.key in fixed_keys or self._graph.count_successors(c) > 0:
+                    return False
+            return True
+
+        queue = deque(c for c in self._graph.iter_indep(reverse=True)
+                      if _check_removable(c.op))
+
+        while queue:
+            item = queue.popleft()
+            preds = self._graph.predecessors(item)
+            self._graph.remove_node(item)
+            queue.extend(c for c in preds if _check_removable(c.op))
+
     def _build_runtime_graph(self):
         runtime_graph = DAG()
-        stored_targets = self.filter_stored_data(self._target_chunk_keys)
-        self._target_chunk_keys.difference_update(stored_targets)
-        stop_keys = set(self._data_tracker.tracked_keys) | set(stored_targets)
+        stored_keys = self._data_tracker.tracked_keys
+        stop_keys = set(stored_keys)
         for profile in self._op_profiles.values():
             if profile.state != OperandState.RUNNING:
                 continue
             for op in profile.ops:
                 stop_keys |= set(c.key for c in op.outputs)
 
-        queue = deque(c for c in self._graph if self._graph.count_successors(c) == 0
-                      and c.key in self._target_chunk_keys and c.key not in stop_keys)
+        queue = deque(c for c in self._graph
+                      if c.key in self._target_chunk_keys and c.key not in stop_keys)
+        logger.warning('QUEUE: %r', queue)
+        visited = set(queue)
         while queue:
             item = queue.popleft()
             runtime_graph.add_node(item)
 
             for pred in self._graph.iter_predecessors(item):
-                if pred.key not in stop_keys:
+                if pred.key not in stop_keys and pred not in visited:
                     queue.append(pred)
+                    visited.add(item)
 
         for n in runtime_graph:
             for succ in self._graph.iter_successors(n):
@@ -175,6 +197,9 @@ class ChunkGraphExecutor:
 
     def submit_chunk_graph(self, graph, chunk_keys=None):
         with self._lock:
+            logger.warning('TRACED KEYS: %s', self._data_tracker.tracked_keys)
+            self._truncate_graph()
+
             chunk_keys = chunk_keys or set(c.key for c in graph if graph.count_predecessors(c) == 0)
             self._target_chunk_keys.update(chunk_keys)
 
@@ -190,25 +215,36 @@ class ChunkGraphExecutor:
                         new_n = key_to_chunks[n.key]
                     for pred in graph.iter_predecessors(n):
                         pred = key_to_chunks[pred.key]
-                        self._graph.add_edge(pred, new_n)
+                        if not self._graph.has_successor(pred, new_n):
+                            self._graph.add_edge(pred, new_n)
+
+                for n in graph:
+                    n.op.outputs = [key_to_chunks[out.key] for out in n.op.outputs]
+
+            logger.warning('%s SUBMIT GRAPH START, TARGET %r, %s',
+                           datetime.datetime.now(), chunk_keys, self._graph.to_dot())
             self._build_runtime_graph()
+            logger.warning('RUNTIME GRAPH %s', self._runtime_graph.to_dot())
             target_chunks = [n for n in self._runtime_graph
                              if self._runtime_graph.count_successors(n) == 0]
 
         for c in self._runtime_graph:
             try:
                 op_profile = self._op_profiles[c.op.key]
-                op_profile.ops = set()
-                if op_profile.state in (OperandState.FINISHED, OperandState.FREED):
+                op_profile.ops = weakref.WeakSet()
+                if op_profile.state in (OperandState.FINISHED, OperandState.FREED,
+                                        OperandState.CANCELLED, OperandState.FATAL):
                     op_profile.state = OperandState.UNSCHEDULED
+                    logger.warning('%s -> UNSCHEDULED', c.op.key)
             except KeyError:
                 self._op_profiles[c.op.key] = OperandProfile(
-                    set(), OperandState.UNSCHEDULED, set())
+                    weakref.WeakSet(), OperandState.UNSCHEDULED, set())
+                logger.warning('%s -> UNSCHEDULED', c.op.key)
         for c in self._runtime_graph:
             self._op_profiles[c.op.key].ops.add(c.op)
 
         ops_to_run = set(n.op.key for n in target_chunks)
-        listener = GraphListener(ops_to_run, self._sync_provider)
+        listener = GraphListener([c.key for c in target_chunks], self._sync_provider)
         for key in ops_to_run:
             self._op_profiles[key].listeners.add(listener)
 
@@ -220,27 +256,33 @@ class ChunkGraphExecutor:
             self._order_starts(self._collect_initial_outputs(self._runtime_graph)))
         self.assign_devices(start_op_keys)
 
-        self._data_tracker.update_graph(self._runtime_graph, self._target_chunk_keys)
+        self._data_tracker.update_graph(self._graph, self._target_chunk_keys)
 
         for op in start_op_keys:
             keys.append(op.key)
         self.enqueue_operands(keys[::-1])
 
         self.submit_operands()
+        logger.warning('%s SUBMIT GRAPH END', datetime.datetime.now())
         return listener
 
     def finish_operand(self, op_key):
-        with self._lock:
-            if self._op_profiles[op_key].state == OperandState.FATAL:
-                return
-            self._op_profiles[op_key].state = OperandState.FINISHED
-
         ops = list(self._op_profiles[op_key].ops)
         # note that currently execution is the chunk-level
         # so we pass the last operand's first output to Executor.handle
         last_op = ops[-1]
 
-        refs = self._data_tracker.add_tracks(last_op.outputs)
+        with self._lock:
+            if self._op_profiles[op_key].state == OperandState.FATAL:
+                for output in itertools.chain(*[op.outputs for op in ops]):
+                    self._target_chunk_keys.difference_update([output.key])
+                return
+            self._op_profiles[op_key].state = OperandState.FINISHED
+            logger.warning('%s -> FINISHED', op_key)
+
+        chunk_keys_to_delete = set()
+        for out_chunk in last_op.outputs:
+            chunk_keys_to_delete |= set(self._data_tracker.add_track(self._graph, out_chunk))
 
         output_keys = set([c.key for c in last_op.outputs])
         # handle other operands
@@ -253,46 +295,52 @@ class ChunkGraphExecutor:
                     output_keys.add(rest_op_output.key)
 
         op_keys_to_execute = []
-        chunk_keys_to_delete = set()
         for output in itertools.chain(*[op.outputs for op in ops]):
             # the output not in the graph will be skipped
             with self._lock:
                 if output not in self._runtime_graph:
                     continue
-                # remove targets
-                self._target_chunk_keys.difference_update([output.key])
-                # in case that operand has multiple outputs
-                # and some of the output not in result keys, delete them
-                if refs.get(output.key) == 0:
-                    chunk_keys_to_delete.add(output.key)
 
                 # add successors' operands to queue
-                successors = self._runtime_graph.successors(output)
-                for succ_chunk in successors:
+                for succ_chunk in self._runtime_graph.successors(output):
                     preds = self._runtime_graph.predecessors(succ_chunk)
                     succ_op_key = succ_chunk.op.key
                     succ_state = self._op_profiles[succ_op_key].state
                     if succ_state not in (OperandState.READY, OperandState.RUNNING, OperandState.FINISHED) \
                             and (len(preds) == 0
-                                 or all(self._op_profiles[pred.op.key].state in OperandState.SUCCESSFUL_STATES
+                                 or all(self._op_profiles[pred.op.key].state == OperandState.FINISHED
                                         for pred in preds)):
                         op_keys_to_execute.append(succ_op_key)
                         self._op_profiles[succ_op_key].state = OperandState.READY
+                        logger.warning('%s -> READY', succ_op_key)
 
         # clean the predecessors' results if ref counts equals 0
         with self._lock:
-            chunk_keys_to_delete |= self._data_tracker.decref(ops)
             for output in itertools.chain(*[op.outputs for op in ops]):
                 for input_chunk in output.op.inputs or ():
-                    if all(c.key not in self._data_tracker and c.key not in self._target_chunk_keys
-                           for c in input_chunk.op.outputs):
-                        self._op_profiles[input_chunk.op.key].state = OperandState.FREED
+                    if input_chunk.op.key not in self._op_profiles:
+                        continue
+                    if not isinstance(input_chunk.op, ShuffleProxy):
+                        if all(c.key not in self._data_tracker and c.key not in self._target_chunk_keys
+                                for c in input_chunk.op.outputs):
+                            self._op_profiles[input_chunk.op.key].state = OperandState.FREED
+                        logger.warning('%s -> FREED', input_chunk.op.key)
+                    elif all(self._op_profiles[succ.op.key].state == OperandState.FINISHED
+                             for succ in self._runtime_graph.iter_successors(input_chunk)):
+                        shuffle_data_keys = []
+                        for map_chunk in self._runtime_graph.predecessors(input_chunk):
+                            for reduce_chunk in self._runtime_graph.successors(input_chunk):
+                                shuffle_data_keys.append((map_chunk.key, reduce_chunk.op.shuffle_key))
+                        self.delete_data_keys(shuffle_data_keys, ignore_errors=True)
 
         self.enqueue_operands(op_keys_to_execute)
         self.submit_operands()
-        if not isinstance(last_op, ShuffleProxy):
-            self.delete_data_keys(chunk_keys_to_delete)
-        self._notify_op_listeners(op_key)
+        with self._lock:
+            if chunk_keys_to_delete and not isinstance(last_op, ShuffleProxy) \
+                    and last_op.stage != OperandStage.reduce:
+                self._data_tracker.remove_tracks(chunk_keys_to_delete)
+                self.delete_data_keys(chunk_keys_to_delete)
+        self._notify_chunk_listeners(op_key, output_keys)
 
     def set_operand_to_fail(self, op_key, exc_info=None):
         with self._lock:
@@ -302,15 +350,19 @@ class ChunkGraphExecutor:
             for op in self._op_profiles[op_key].ops:
                 op_chunks.update({c.key: c for c in op.outputs})
 
-            keys_to_cancel = set()
+            op_keys_to_cancel = set()
             for c in self._runtime_graph.dfs(list(op_chunks.values())):
-                keys_to_cancel.add(c.op.key)
+                op_keys_to_cancel.add(c.op.key)
+                self._target_chunk_keys.difference_update([c.key])
 
-        for op_key in keys_to_cancel:
+        for op_key in op_keys_to_cancel:
             self.cancel_operand(op_key, exc_info=exc_info)
+            chunk_keys = set()
             with self._lock:
                 self._op_profiles[op_key].state = OperandState.CANCELLED
-            self._notify_op_listeners(op_key, exc_info=exc_info)
+                chunk_keys.update(out.key for op in self._op_profiles[op_key].ops
+                                  for out in op.outputs)
+            self._notify_chunk_listeners(op_key, chunk_keys, exc_info=exc_info)
 
     def assign_devices(self, initial_op_keys):
         raise NotImplementedError
@@ -327,7 +379,7 @@ class ChunkGraphExecutor:
     def cancel_operand(self, op_key, exc_info=None):
         pass
 
-    def delete_data_keys(self, chunk_keys):
+    def delete_data_keys(self, chunk_keys, ignore_errors=False):
         raise NotImplementedError
 
     def filter_stored_data(self, chunk_keys):
@@ -338,8 +390,8 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
     _method_name = 'execute'
     _op_runners = dict()
 
-    def __init__(self, chunk_results, sync_provider, engine=None, n_parallel=None):
-        super().__init__(sync_provider, engine=engine)
+    def __init__(self, chunk_results, data_tracker, sync_provider, engine=None, n_parallel=None):
+        super().__init__(sync_provider, data_tracker, engine=engine)
         self._chunk_results = chunk_results
 
         self._n_parallel = n_parallel or 1
@@ -363,6 +415,9 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
                     op._device = v
 
     def _call_runner(self, op):
+        logger.warning('RUN %r -> %s', set(inp.key for inp in op.inputs or ()), op.key)
+        prior_keys = set(self._chunk_results.keys())
+
         op_runners = self._op_runners
         try:
             runner = op_runners[type(op)]
@@ -373,7 +428,10 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
             context = get_context()
             if context is None and isinstance(self._chunk_results, ContextBase):
                 with self._chunk_results:
-                    return runner(self._chunk_results, op)
+                    try:
+                        return runner(self._chunk_results, op)
+                    except KeyError:
+                        raise
             else:
                 return runner(self._chunk_results, op)
         except NotImplementedError:
@@ -382,6 +440,8 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
                     runner = op_runners[type(op)] = op_runners[op_cls]
                     return runner(self._chunk_results, op)
             raise KeyError(f'No handler found for op: {op}')
+        finally:
+            logger.warning('NEW KEYS: %r', set(self._chunk_results.keys()) - prior_keys)
 
     def _execute_operand(self, op_key):
         try:
@@ -390,7 +450,7 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
             # Cast `UFuncTypeError` to `TypeError` since subclasses of the former is unpickleable.
             # The `UFuncTypeError` was introduced by numpy#12593 since v1.17.0.
             try:
-                self._call_runner(ops[0])
+                self._call_runner(ops[-1])
             except UFuncTypeError as e:
                 raise TypeError(str(e)).with_traceback(sys.exc_info()[2]) from None
         except:  # noqa: E722
@@ -416,6 +476,7 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
 
         for op_key in op_keys:
             self._op_profiles[op_key].state = OperandState.RUNNING
+            logger.warning('%s -> RUNNING', op_key)
             future = self._operand_executor.submit(self._execute_operand, op_key)
             if callable(getattr(future, 'add_done_callback', None)):
                 future.add_done_callback(build_callback(op_key))
@@ -423,14 +484,15 @@ class LocalChunkGraphExecutor(ChunkGraphExecutor):
                 future.rawlink(build_callback(op_key))
 
     def copy_data_ref(self, dest_chunk_key, src_chunk_key):
-        try:
-            self._chunk_results[dest_chunk_key] = self._chunk_results[src_chunk_key]
-        except KeyError:
-            raise
+        self._chunk_results[dest_chunk_key] = self._chunk_results[src_chunk_key]
 
-    def delete_data_keys(self, chunk_keys):
+    def delete_data_keys(self, chunk_keys, ignore_errors=False):
+        logger.warning('DELETE %r', chunk_keys)
         for chunk_key in chunk_keys:
-            del self._chunk_results[chunk_key]
+            if ignore_errors:
+                self._chunk_results.pop(chunk_key, None)
+            else:
+                del self._chunk_results[chunk_key]
 
     def filter_stored_data(self, chunk_keys):
         return [k for k in chunk_keys if k in self._chunk_results]

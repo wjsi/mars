@@ -33,6 +33,7 @@ from ..utils import enter_mode, build_fetch, calc_nsplits,\
     has_unknown_shape, prune_chunk_graph
 from .core import SyncProviderType, get_sync_provider
 from .chunk_executor import LocalChunkGraphExecutor, MockChunkGraphExecutor
+from .data_tracker import DataTracker
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class Executor(object):
 
         self._engine = engine
         self._chunk_result = storage if storage is not None else LocalContext(Session.default_or_local())
+        self._data_tracker = DataTracker()
         self._prefetch = prefetch
 
         # dict structure: {tileable_key -> fetch tileables}
@@ -62,11 +64,12 @@ class Executor(object):
 
         if not mock:
             self._graph_executor = self._graph_executor_cls(
-                self._chunk_result, self._sync_provider, engine=self._engine, n_parallel=n_parallel)
+                self._chunk_result, self._data_tracker, self._sync_provider, engine=self._engine,
+                n_parallel=n_parallel)
         else:
             self._graph_executor = MockChunkGraphExecutor(
-                self._chunk_result, self._sync_provider, engine=self._engine, n_parallel=n_parallel,
-                mock_max_memory=self._mock_max_memory)
+                self._chunk_result, None, self._sync_provider, engine=self._engine,
+                n_parallel=n_parallel, mock_max_memory=self._mock_max_memory)
 
     @property
     def chunk_result(self):
@@ -338,6 +341,7 @@ class Executor(object):
             finally:
                 for to_release_key in to_release_keys:
                     del self._chunk_result[to_release_key]
+                self._data_tracker.remove_tracks(to_release_keys)
                 self._chunk_result.update(
                     {k: self._chunk_result[k] for k in result_keys if k in self._chunk_result})
 
@@ -376,7 +380,9 @@ class Executor(object):
         # if chunk executed, fetch chunk mechanism will be triggered in execute_tileables
         result = self.execute_tileables(tileables, **kw)
         for to_release_tileable in to_release_tileables:
-            for c in get_tiled(to_release_tileable, mapping=tileable_optimized).chunks:
+            tiled = get_tiled(to_release_tileable, mapping=tileable_optimized)
+            self._data_tracker.remove_tracks([c.key for c in tiled.chunks])
+            for c in tiled.chunks:
                 del self._chunk_result[c.key]
         return result
 
@@ -410,6 +416,7 @@ class Executor(object):
                     continue
                 for chunk_key in (chunk_keys & rs):
                     self._chunk_result.pop(chunk_key, None)
+                self._data_tracker.remove_tracks(chunk_keys & rs)
                 del self.stored_tileables[tileable_key]
 
     def increase_pool_size(self):
