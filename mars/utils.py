@@ -1162,3 +1162,11 @@ class Timer:
     def __exit__(self, *_):
         end = time.time()
         self.duration = end - self._start
+
+
+def async_function(func):
+    @functools.wraps(func)
+    async def _wrapper(*args, **kwargs):
+        return await func(*args, **kwargs)
+
+    return _wrapper

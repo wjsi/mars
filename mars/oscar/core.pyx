@@ -15,6 +15,7 @@
 import asyncio
 
 from .utils cimport is_async_generator
+from ..utils import async_function
 
 
 cdef class ActorRef:
@@ -159,18 +160,21 @@ cdef class _Actor:
             pass
         return res
 
+    @async_function
     async def __post_create__(self):
         """
         Method called after actor creation
         """
         pass
 
+    @async_function
     async def __pre_destroy__(self):
         """
         Method called before actor destroy
         """
         pass
 
+    @async_function
     async def __on_receive__(self, tuple message):
         """
         Handle message from other actors and dispatch them to user methods
