@@ -31,7 +31,7 @@ from .kvstore import KVStoreActor
 from .operands import get_operand_actor_class, OperandState
 from .resource import ResourceActor
 from .session import SessionActor
-from .utils import SchedulerActor, GraphState
+from .utils import SchedulerActor, JobState
 from ..actors.errors import ActorAlreadyExist
 from ..config import options
 from ..errors import ExecutionInterrupted, GraphNotExists, WorkerDead
@@ -235,7 +235,7 @@ class GraphActor(SchedulerActor):
 
     def __init__(self, session_id, graph_key, serialized_tileable_graph,
                  target_tileables=None, serialized_chunk_graph=None,
-                 state=GraphState.UNSCHEDULED, final_state=None):
+                 state=JobState.UNSCHEDULED, final_state=None):
         super().__init__()
         self._graph_key = graph_key
         self._session_id = session_id
@@ -362,13 +362,13 @@ class GraphActor(SchedulerActor):
         self._graph_meta_ref.set_final_state(value, _tell=True, _wait=False)
 
     def _detect_cancel(self, callback=None):
-        if self.reload_state() == GraphState.CANCELLING:
+        if self.reload_state() == JobState.CANCELLING:
             logger.info('Cancel detected, stopping')
             if callback:
                 callback()
             else:
                 self._graph_meta_ref.set_graph_end(_tell=True, _wait=False)
-                self.state = GraphState.CANCELLED
+                self.state = JobState.CANCELLED
             raise ExecutionInterrupted
 
     @log_unhandled
@@ -378,7 +378,7 @@ class GraphActor(SchedulerActor):
         """
 
         self._graph_meta_ref.set_graph_start(_tell=True, _wait=False)
-        self.state = GraphState.PREPARING
+        self.state = JobState.PREPARING
         self._execute_graph(compose=compose)
 
     def _dump_graph(self):
@@ -415,7 +415,7 @@ class GraphActor(SchedulerActor):
             self.analyze_graph()
             self._detect_cancel()
 
-            if self.state == GraphState.SUCCEEDED:
+            if self.state == JobState.SUCCEEDED:
                 self._graph_meta_ref.set_graph_end(_tell=True, _wait=False)
             else:
                 self.create_operand_actors()
@@ -426,7 +426,7 @@ class GraphActor(SchedulerActor):
             logger.exception('Failed to start graph execution.')
             self._graph_meta_ref.set_exc_info(sys.exc_info(), _tell=True, _wait=False)
             self.stop_graph()
-            self.state = GraphState.FAILED
+            self.state = JobState.FAILED
             self._graph_meta_ref.set_graph_end(_tell=True, _wait=False)
             raise
 
@@ -436,14 +436,14 @@ class GraphActor(SchedulerActor):
         Stop graph execution
         """
         from .operands import OperandActor
-        if self.state == GraphState.CANCELLED:
+        if self.state == JobState.CANCELLED:
             return
-        self.state = GraphState.CANCELLING
+        self.state = JobState.CANCELLING
 
         try:
             chunk_graph = self.get_chunk_graph()
         except (KeyError, GraphNotExists, AttributeError):
-            self.state = GraphState.CANCELLED
+            self.state = JobState.CANCELLED
             return
 
         has_stopping = False
@@ -459,7 +459,7 @@ class GraphActor(SchedulerActor):
                 has_stopping = True
                 ref.stop_operand(_tell=True)
         if not has_stopping:
-            self.state = GraphState.CANCELLED
+            self.state = JobState.CANCELLED
             self._graph_meta_ref.set_graph_end(_tell=True, _wait=False)
 
     @log_unhandled
@@ -762,7 +762,7 @@ class GraphActor(SchedulerActor):
                     chunk_graph.remove_node(c)
 
         if len(chunk_graph) == 0:
-            self.state = GraphState.SUCCEEDED
+            self.state = JobState.SUCCEEDED
             return
 
         for n in chunk_graph:
@@ -957,7 +957,7 @@ class GraphActor(SchedulerActor):
                 last_progress = int(progress * 20)
                 logger.info('Operand actor creation progress: %d / %d', processed_ops, total_ops)
 
-        self.state = GraphState.RUNNING
+        self.state = JobState.RUNNING
         self._graph_meta_ref.update_op_infos(meta_op_infos, _tell=True, _wait=False)
 
         if _start:
@@ -1004,21 +1004,21 @@ class GraphActor(SchedulerActor):
         :param op_key: operand key
         :param final_state: state of the operand
         """
-        if self._state not in (GraphState.RUNNING, GraphState.CANCELLING):
+        if self._state not in (JobState.RUNNING, JobState.CANCELLING):
             return
         if exc is not None:
             self._graph_meta_ref.set_exc_info(exc, _tell=True, _wait=False)
 
         tileable_keys = self._terminal_chunk_op_key_to_tileable_key[op_key]
-        is_failed = final_state in (GraphState.CANCELLED, GraphState.FAILED)
+        is_failed = final_state in (JobState.CANCELLED, JobState.FAILED)
         terminal_tileable_count = len(self._terminal_tileable_key_to_chunk_op_keys)
         try:
             for tileable_key in tileable_keys:
                 self._target_tileable_finished[tileable_key].add(op_key)
-                if final_state == GraphState.FAILED:
-                    if self.final_state != GraphState.CANCELLED:
-                        self.final_state = GraphState.FAILED
-                elif final_state == GraphState.CANCELLED:
+                if final_state == JobState.FAILED:
+                    if self.final_state != JobState.CANCELLED:
+                        self.final_state = JobState.FAILED
+                elif final_state == JobState.CANCELLED:
                     self.final_state = final_state
 
                 if self._target_tileable_finished[tileable_key] == \
@@ -1050,7 +1050,7 @@ class GraphActor(SchedulerActor):
                         skip_chunk_keys.update([c.key for c in tiled_target_tileable_data.chunks])
                     [self.free_tileable_data(k, skip_chunk_keys=skip_chunk_keys)
                      for k in to_free_tileable_keys]
-                self.state = self.final_state if self.final_state is not None else GraphState.SUCCEEDED
+                self.state = self.final_state if self.final_state is not None else JobState.SUCCEEDED
                 self._graph_meta_ref.set_graph_end(_tell=True)
             else:
                 self._execute_graph(compose=self._chunk_graph_builder.is_compose)
@@ -1129,7 +1129,7 @@ class GraphActor(SchedulerActor):
             # the `_operand_infos` will be a completely new one,
             # in this case, we don't actually care about if the op is freed
             return
-        if op_key not in self._operand_infos and self.state in GraphState.TERMINATED_STATES:
+        if op_key not in self._operand_infos and self.state in JobState.TERMINATED_STATES:
             # if operand has been cleared in iterative tiling and execute again in another
             # graph, just ignore it.
             return
@@ -1151,7 +1151,7 @@ class GraphActor(SchedulerActor):
 
     @log_unhandled
     def set_operand_worker(self, op_key, worker):
-        if op_key not in self._operand_infos and self.state in GraphState.TERMINATED_STATES:
+        if op_key not in self._operand_infos and self.state in JobState.TERMINATED_STATES:
             # if operand has been cleared in iterative tiling and execute again in another
             # graph, just ignore it.
             return
@@ -1332,7 +1332,7 @@ class GraphActor(SchedulerActor):
         :param lost_chunks: keys of lost chunks
         :param handle_later: run the function later, only used in this actor
         """
-        if self._state in GraphState.TERMINATED_STATES:
+        if self._state in JobState.TERMINATED_STATES:
             return
 
         if handle_later:
@@ -1368,7 +1368,7 @@ class GraphActor(SchedulerActor):
                 logger.exception('Failed as worker dead and fail-over not enabled.')
                 self._graph_meta_ref.set_exc_info(build_exc_info(WorkerDead), _tell=True, _wait=False)
                 self.stop_graph()
-                self.state = GraphState.FAILED
+                self.state = JobState.FAILED
                 self._graph_meta_ref.set_graph_end(_tell=True, _wait=False)
             else:  # pragma: no cover
                 logger.warning('New workers added. Existing operands will not be rescheduled.')

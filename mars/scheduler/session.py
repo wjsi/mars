@@ -17,7 +17,7 @@ import os
 import uuid
 
 from .utils import SchedulerActor
-from ..utils import log_unhandled
+from ..utils import log_unhandled, deserialize_graph
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,11 @@ class SessionActor(SchedulerActor):
         self._tileable_names = dict()
         self._graph_infos = dict()
 
+        self._tileable_graphs = dict()
+        self._job_statuses = dict()
+
         self._cluster_info_ref = None
+        self._chunk_lifecycle_ref = None
         self._assigner_ref = None
         self._manager_ref = None
         self._graph_refs = dict()
@@ -41,7 +45,7 @@ class SessionActor(SchedulerActor):
 
     @staticmethod
     def gen_uid(session_id):
-        return f's:h1:session${session_id}'
+        return f's:0:session${session_id}@{session_id}'
 
     def get_argument(self, key):
         return self._args[key]
@@ -65,9 +69,15 @@ class SessionActor(SchedulerActor):
         self._manager_ref = self.ctx.actor_ref(SessionManagerActor.default_uid())
 
         from .assigner import AssignerActor
-        assigner_uid = AssignerActor.gen_uid(self._session_id)
-        address = self.get_scheduler(assigner_uid)
-        self._assigner_ref = self.ctx.create_actor(AssignerActor, uid=assigner_uid, address=address)
+        uid = AssignerActor.gen_uid(self._session_id)
+        address = self.get_scheduler(uid)
+        self._assigner_ref = self.ctx.create_actor(AssignerActor, uid=uid, address=address)
+
+        from .chunklifecycle import ChunkLifecycleActor
+        uid = ChunkLifecycleActor.gen_uid(self._session_id)
+        address = self.get_scheduler(uid)
+        self._chunk_lifecycle_ref = self.ctx.create_actor(
+            ChunkLifecycleActor, self._session_id, uid=uid, address=address)
 
     def pre_destroy(self):
         super().pre_destroy()
@@ -91,28 +101,21 @@ class SessionActor(SchedulerActor):
         return self._graph_infos
 
     @log_unhandled
-    def submit_tileable_graph(self, serialized_graph, graph_key, target_tileables=None, names=None, compose=True):
-        from .graph import GraphActor, GraphMetaActor
+    def submit_job(self, serialized_graph, job_key, target_tileables=None):
+        from .job import JobActor
+        job_uid = JobActor.gen_uid(self._session_id, job_key)
 
-        graph_uid = GraphActor.gen_uid(self._session_id, graph_key)
+        tileable_graph = self._tileable_graphs[job_key] = deserialize_graph(serialized_graph)
 
-        graph_addr = self.get_scheduler(graph_uid)
-        graph_ref = self.ctx.create_actor(GraphActor, self._session_id, graph_key,
-                                          serialized_graph, target_tileables=target_tileables,
-                                          uid=graph_uid, address=graph_addr)
-        self._graph_refs[graph_key] = graph_ref
-        self._graph_meta_refs[graph_key] = self.ctx.actor_ref(
-            GraphMetaActor.gen_uid(self._session_id, graph_key), address=graph_addr)
+        job_ref = self.ctx.create_actor(JobActor, self._session_id, job_key, tileable_graph,
+                                        target_tileables, uid=job_uid)
+        job_ref.start_execution(_tell=True)
 
-        graph_ref.execute_graph(_tell=True, compose=compose)
+    def update_job_status(self, job_id, status):
+        self._job_statuses[job_id] = status
 
-        for tileable_key in target_tileables or ():
-            if tileable_key not in self._tileable_to_graph:
-                self._tileable_to_graph[tileable_key] = graph_ref
-
-        if names:
-            self._tileable_names.update(zip(names, target_tileables))
-        return graph_ref
+    def get_job_status(self, job_id):
+        return self._job_statuses.get(job_id)
 
     @log_unhandled
     def create_mutable_tensor(self, name, shape, dtype, *args, **kwargs):
@@ -152,7 +155,7 @@ class SessionActor(SchedulerActor):
     @log_unhandled
     def seal(self, name):
         from .graph import GraphActor, GraphMetaActor
-        from .utils import GraphState
+        from .utils import JobState
 
         tensor_ref = self._mut_tensor_refs.get(name)
         if tensor_ref is None or tensor_ref.sealed():
@@ -168,7 +171,7 @@ class SessionActor(SchedulerActor):
 
         graph_ref = self.ctx.create_actor(GraphActor, self._session_id, graph_key,
                                           serialized_tileable_graph=None,
-                                          state=GraphState.SUCCEEDED, final_state=GraphState.SUCCEEDED,
+                                          state=JobState.SUCCEEDED, final_state=JobState.SUCCEEDED,
                                           uid=graph_uid, address=graph_addr)
         self._graph_refs[graph_key] = graph_ref
         self._graph_meta_refs[graph_key] = self.ctx.actor_ref(

@@ -24,7 +24,7 @@ from mars.config import options
 from mars.errors import ExecutionInterrupted
 from mars.scheduler import OperandActor, ResourceActor, GraphActor, AssignerActor, \
     AssignEvaluationActor, ChunkMetaActor, GraphMetaActor
-from mars.scheduler.utils import GraphState, SchedulerClusterInfoActor, SchedulerActor
+from mars.scheduler.utils import JobState, SchedulerClusterInfoActor, SchedulerActor
 from mars.worker.execution import GraphExecutionRecord
 from mars.utils import serialize_graph, log_unhandled, build_exc_info
 from mars.tests.core import patch_method, create_actor_pool
@@ -174,7 +174,7 @@ class Test(unittest.TestCase):
                 pool.sleep(0.1)
                 if time.time() - start_time > 30:
                     raise SystemError('Wait for execution finish timeout')
-                if graph_meta_ref.get_state() in (GraphState.SUCCEEDED, GraphState.FAILED, GraphState.CANCELLED):
+                if graph_meta_ref.get_state() in (JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED):
                     break
 
     @patch_method(OperandActor._get_raw_execution_ref)
@@ -309,9 +309,9 @@ class Test(unittest.TestCase):
                     graph_ref.stop_graph(_tell=True)
                 if time.time() - start_time > 30:
                     raise SystemError('Wait for execution finish timeout')
-                if graph_meta_ref.get_state() in (GraphState.SUCCEEDED, GraphState.FAILED, GraphState.CANCELLED):
+                if graph_meta_ref.get_state() in (JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED):
                     break
-            self.assertEqual(graph_meta_ref.get_state(), GraphState.CANCELLED)
+            self.assertEqual(graph_meta_ref.get_state(), JobState.CANCELLED)
 
             pool.sleep(1)
             self.assertEqual(len(resource_ref.get_allocations()), 0)

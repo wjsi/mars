@@ -118,7 +118,7 @@ class MarsWebAPI(MarsAPI):
         return self.session_manager.get_sessions()
 
     def get_tasks_info(self, select_session_id=None):
-        from ..scheduler import GraphState
+        from ..scheduler import JobState
 
         sessions = defaultdict(dict)
         for session_id, session_ref in self.session_manager.get_session_refs().items():
@@ -134,7 +134,7 @@ class MarsWebAPI(MarsAPI):
                 task_desc = dict()
 
                 state = self.get_graph_state(session_id, graph_key)
-                if state == GraphState.PREPARING:
+                if state == JobState.PREPARING:
                     task_desc['state'] = state.name.lower()
                     session_desc['tasks'][graph_key] = task_desc
                     continue

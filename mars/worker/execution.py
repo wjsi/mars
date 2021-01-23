@@ -38,19 +38,20 @@ class GraphExecutionRecord(object):
     """
     Execution records of the graph
     """
-    __slots__ = ('graph', 'graph_serialized', '_state', 'op_string', 'data_targets',
-                 'chunk_targets', 'io_meta', 'data_metas', 'shared_input_chunks',
-                 'state_time', 'mem_request', 'pinned_keys', 'mem_overhead_keys',
-                 'est_finish_time', 'calc_actor_uid', 'send_addresses', 'retry_delay',
-                 'retry_pending', 'finish_callbacks', 'stop_requested', 'calc_device',
-                 'preferred_data_device', 'resource_released', 'pure_dep_chunk_keys')
+    __slots__ = ('graph', 'graph_serialized', '_state', 'op_string', 'job_id',
+                 'data_targets', 'chunk_targets', 'io_meta', 'data_metas',
+                 'shared_input_chunks', 'state_time', 'mem_request', 'pinned_keys',
+                 'mem_overhead_keys', 'est_finish_time', 'calc_actor_uid',
+                 'send_addresses', 'retry_delay', 'retry_pending', 'finish_callbacks',
+                 'stop_requested', 'calc_device', 'preferred_data_device',
+                 'resource_released', 'pure_dep_chunk_keys')
 
-    def __init__(self, graph_serialized, state, chunk_targets=None, data_targets=None,
-                 io_meta=None, data_metas=None, mem_request=None, shared_input_chunks=None,
-                 pinned_keys=None, mem_overhead_keys=None, est_finish_time=None,
-                 calc_actor_uid=None, send_addresses=None, retry_delay=None,
-                 finish_callbacks=None, stop_requested=False, calc_device=None,
-                 preferred_data_device=None, resource_released=False,
+    def __init__(self, graph_serialized, state, job_id=None, chunk_targets=None,
+                 data_targets=None, io_meta=None, data_metas=None, mem_request=None,
+                 shared_input_chunks=None, pinned_keys=None, mem_overhead_keys=None,
+                 est_finish_time=None, calc_actor_uid=None, send_addresses=None,
+                 retry_delay=None, finish_callbacks=None, stop_requested=False,
+                 calc_device=None, preferred_data_device=None, resource_released=False,
                  pure_dep_chunk_keys=None):
 
         self.graph_serialized = graph_serialized
@@ -58,6 +59,7 @@ class GraphExecutionRecord(object):
 
         self._state = state
         self.state_time = time.time()
+        self.job_id = job_id
         self.data_targets = data_targets or []
         self.chunk_targets = chunk_targets or []
         self.io_meta = io_meta or dict()
@@ -457,11 +459,12 @@ class ExecutionActor(WorkerActor):
 
     @promise.reject_on_exception
     @log_unhandled
-    def execute_graph(self, session_id, graph_key, graph_ser, io_meta, data_metas,
+    def execute_graph(self, session_id, job_id, graph_key, graph_ser, io_meta, data_metas,
                       calc_device=None, send_addresses=None, callback=None):
         """
         Submit graph to the worker and control the execution
         :param session_id: session id
+        :param job_id: job id
         :param graph_key: graph key
         :param graph_ser: serialized executable graph
         :param io_meta: io meta of the chunk
@@ -501,6 +504,7 @@ class ExecutionActor(WorkerActor):
 
         graph_record = self._graph_records[(session_id, graph_key)] = GraphExecutionRecord(
             graph_ser, ExecutionState.ALLOCATING,
+            job_id=job_id,
             io_meta=io_meta,
             data_metas=data_metas,
             chunk_targets=io_meta['chunks'],
@@ -571,7 +575,7 @@ class ExecutionActor(WorkerActor):
                 graph_record.retry_pending = True
 
                 self.ref().execute_graph(
-                    session_id, graph_key, graph_record.graph_serialized, graph_record.io_meta,
+                    session_id, job_id, graph_key, graph_record.graph_serialized, graph_record.io_meta,
                     graph_record.data_metas, calc_device=calc_device, send_addresses=send_addresses,
                     _tell=True, _delay=retry_delay)
                 return
@@ -998,13 +1002,18 @@ class ExecutionActor(WorkerActor):
         :param graph_key: graph key
         """
         query_key = (session_id, graph_key)
-        callbacks = self._graph_records[query_key].finish_callbacks
+        graph_record = self._graph_records[query_key]
+        callbacks = graph_record.finish_callbacks
         args, kwargs = self._result_cache[query_key].build_args()
 
         logger.debug('Send finish callback for graph %s into %d targets', graph_key, len(callbacks))
         kwargs['_wait'] = False
         for cb in callbacks:
             self.tell_promise(cb, *args, **kwargs)
+        if not callbacks:
+            from ..scheduler.job import JobActor
+            ref = self.get_actor_ref(JobActor.gen_uid(session_id, graph_record.job_id))
+            ref.set_operand_finished(graph_key, _tell=True)
         self._cleanup_graph(session_id, graph_key)
 
     def delete_result_cache(self, session_id, graph_key):

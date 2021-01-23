@@ -29,7 +29,7 @@ from mars.tests.core import EtcdProcessHelper
 from mars.utils import get_next_port, kill_process_tree
 from mars.actors.core import new_client
 from mars.scheduler import SessionManagerActor, ResourceActor
-from mars.scheduler.graph import GraphState
+from mars.scheduler.graph import JobState
 from mars.scheduler.utils import SchedulerClusterInfoActor
 
 logger = logging.getLogger(__name__)
@@ -234,5 +234,5 @@ class SchedulerIntegratedTest(unittest.TestCase):
                     graph_ref.dump_unfinished_terminals()
                 except KeyError:
                     pass
-            if session_ref.graph_state(graph_key) in GraphState.TERMINATED_STATES:
+            if session_ref.graph_state(graph_key) in JobState.TERMINATED_STATES:
                 return session_ref.graph_state(graph_key)

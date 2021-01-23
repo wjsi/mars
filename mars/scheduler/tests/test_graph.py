@@ -19,7 +19,7 @@ import unittest
 import mars.tensor as mt
 from mars.scheduler.analyzer import GraphAnalyzer
 from mars.scheduler import GraphActor, GraphMetaActor, ResourceActor, ChunkMetaActor, \
-    AssignerActor, GraphState, OperandState
+    AssignerActor, JobState, OperandState
 from mars.scheduler.utils import SchedulerClusterInfoActor
 from mars.utils import serialize_graph, get_next_port
 from mars.graph import DAG
@@ -164,10 +164,10 @@ class Test(unittest.TestCase):
             for c in out_graph:
                 if not isinstance(c.op, TensorAdd):
                     continue
-                self.assertNotEqual(graph_ref.get_state(), GraphState.SUCCEEDED)
+                self.assertNotEqual(graph_ref.get_state(), JobState.SUCCEEDED)
                 graph_ref.add_finished_terminal(c.op.key)
 
-            self.assertEqual(graph_ref.get_state(), GraphState.SUCCEEDED)
+            self.assertEqual(graph_ref.get_state(), JobState.SUCCEEDED)
 
         arr = mt.random.random((8, 2), chunk_size=2)
         arr2 = arr + 1
@@ -176,10 +176,10 @@ class Test(unittest.TestCase):
             for c in out_graph:
                 if not isinstance(c.op, TensorAdd):
                     continue
-                self.assertNotEqual(graph_ref.get_state(), GraphState.FAILED)
-                graph_ref.add_finished_terminal(c.op.key, GraphState.FAILED)
+                self.assertNotEqual(graph_ref.get_state(), JobState.FAILED)
+                graph_ref.add_finished_terminal(c.op.key, JobState.FAILED)
 
-            self.assertEqual(graph_ref.get_state(), GraphState.FAILED)
+            self.assertEqual(graph_ref.get_state(), JobState.FAILED)
 
     def testEmptyGraph(self, *_):
         session_id = str(uuid.uuid4())
@@ -201,7 +201,7 @@ class Test(unittest.TestCase):
             graph_ref = pool.create_actor(GraphActor, session_id, graph_key, serialized_graph,
                                           uid=GraphActor.gen_uid(session_id, graph_key))
             graph_ref.execute_graph()
-            self.assertEqual(graph_ref.get_state(), GraphState.SUCCEEDED)
+            self.assertEqual(graph_ref.get_state(), JobState.SUCCEEDED)
 
     def testErrorOnPrepare(self, *_):
         session_id = str(uuid.uuid4())
@@ -232,7 +232,7 @@ class Test(unittest.TestCase):
             with patch_method(GraphActor.create_operand_actors, new=_mock_raises):
                 with self.assertRaises(RuntimeError):
                     graph_ref.execute_graph()
-            self.assertEqual(graph_ref.get_state(), GraphState.FAILED)
+            self.assertEqual(graph_ref.get_state(), JobState.FAILED)
             graph_ref.destroy()
 
             # interrupted during create_operand_actors
@@ -242,11 +242,11 @@ class Test(unittest.TestCase):
 
             def _mock_cancels(*_, **__):
                 graph_meta_ref = pool.actor_ref(GraphMetaActor.gen_uid(session_id, graph_key))
-                graph_meta_ref.set_state(GraphState.CANCELLING)
+                graph_meta_ref.set_state(JobState.CANCELLING)
 
             with patch_method(GraphActor.create_operand_actors, new=_mock_cancels):
                 graph_ref.execute_graph()
-            self.assertEqual(graph_ref.get_state(), GraphState.CANCELLED)
+            self.assertEqual(graph_ref.get_state(), JobState.CANCELLED)
 
             # interrupted during previous steps
             graph_key = str(uuid.uuid4())
@@ -255,9 +255,9 @@ class Test(unittest.TestCase):
 
             def _mock_cancels(*_, **__):
                 graph_meta_ref = pool.actor_ref(GraphMetaActor.gen_uid(session_id, graph_key))
-                graph_meta_ref.set_state(GraphState.CANCELLING)
+                graph_meta_ref.set_state(JobState.CANCELLING)
                 return dict()
 
             with patch_method(GraphAnalyzer.calc_operand_assignments, new=_mock_cancels):
                 graph_ref.execute_graph()
-            self.assertEqual(graph_ref.get_state(), GraphState.CANCELLED)
+            self.assertEqual(graph_ref.get_state(), JobState.CANCELLED)

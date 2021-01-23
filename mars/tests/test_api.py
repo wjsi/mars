@@ -20,7 +20,7 @@ from collections import OrderedDict
 
 from mars.utils import get_next_port
 from mars.scheduler import GraphActor, ResourceActor, SessionManagerActor,\
-    GraphState, ChunkMetaClient, ChunkMetaActor
+    JobState, ChunkMetaClient, ChunkMetaActor
 from mars.scheduler.utils import SchedulerClusterInfoActor
 from mars.api import MarsAPI
 from mars.tests.core import patch_method, create_actor_pool

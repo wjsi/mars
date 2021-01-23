@@ -170,16 +170,16 @@ class MarsAPI(object):
         graph_ref.destroy()
 
     def stop_graph(self, session_id, graph_key):
-        from .scheduler import GraphState
+        from .scheduler import JobState
         graph_meta_ref = self.get_graph_meta_ref(session_id, graph_key)
-        graph_meta_ref.set_state(GraphState.CANCELLING)
+        graph_meta_ref.set_state(JobState.CANCELLING)
 
         graph_uid = GraphActor.gen_uid(session_id, graph_key)
         graph_ref = self.get_actor_ref(graph_uid)
         graph_ref.stop_graph()
 
     def get_graph_state(self, session_id, graph_key):
-        from .scheduler import GraphState
+        from .scheduler import JobState
 
         graph_meta_ref = self.get_graph_meta_ref(session_id, graph_key)
         try:

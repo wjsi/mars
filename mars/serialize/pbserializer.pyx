@@ -1,3 +1,5 @@
+# cython: profile=True
+
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Copyright 1999-2020 Alibaba Group Holding Ltd.
@@ -69,10 +71,14 @@ cdef dict PRIMITIVE_TYPE_TO_VALUE_FIELD = {
 
 
 cdef class ProtobufSerializeProvider(Provider):
+    cdef dict _serial_cache
+
     def __init__(self, data_serial_type=None, pickle_protocol=None):
         self.type = ProviderType.protobuf
         self.data_serial_type = data_serial_type
         self.pickle_protocol = pickle_protocol
+
+        self._serial_cache = dict()
 
     cdef inline void _set_slice(self, slice value, obj, tp=None):
         if value.start is not None:
@@ -157,8 +163,12 @@ cdef class ProtobufSerializeProvider(Provider):
         return dataloads(x) if x is not None and len(x) > 0 else None
 
     cdef inline void _set_series(self, value, obj, tp=None) except *:
-        obj.series = datadumps(value, serial_type=self.data_serial_type,
-                               pickle_protocol=self.pickle_protocol)
+        if id(value) in self._serial_cache:
+            obj.series = self._serial_cache[id(value)]
+        else:
+            obj.series = datadumps(value, serial_type=self.data_serial_type,
+                                   pickle_protocol=self.pickle_protocol)
+            self._serial_cache[id(value)] = obj.series
 
     cdef inline _get_series(self, obj):
         x = obj.series

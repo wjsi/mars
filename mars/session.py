@@ -276,7 +276,7 @@ class ClusterSession(object):
 
     def run(self, *tileables, **kw):
         from .utils import build_tileable_graph
-        from .scheduler.graph import GraphState
+        from .scheduler.graph import JobState
         from .errors import ExecutionFailed
 
         timeout = kw.pop('timeout', -1)
@@ -312,9 +312,9 @@ class ClusterSession(object):
                 timeout_val = min(check_interval, timeout - time_elapsed) if timeout > 0 else check_interval
                 self._api.wait_graph_finish(self._session_id, graph_key, timeout=timeout_val)
                 graph_state = self._api.get_graph_state(self._session_id, graph_key)
-                if graph_state == GraphState.SUCCEEDED:
+                if graph_state == JobState.SUCCEEDED:
                     break
-                if graph_state == GraphState.FAILED:
+                if graph_state == JobState.FAILED:
                     exc_info = self._api.get_graph_exc_info(self._session_id, graph_key)
                     if exc_info is not None:
                         exc = exc_info[1].with_traceback(exc_info[2])

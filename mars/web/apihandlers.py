@@ -165,7 +165,7 @@ class GraphApiHandler(MarsApiRequestHandler):
 
     @gen.coroutine
     def get(self, session_id, graph_key):
-        from ..scheduler.utils import GraphState
+        from ..scheduler.utils import JobState
 
         wait_timeout = self.get_argument('wait_timeout', None)
         if wait_timeout is not None:
@@ -184,14 +184,14 @@ class GraphApiHandler(MarsApiRequestHandler):
                     yield from _with_timeout(wait_timeout, self._executor.submit(_wait_fun))
                     state = self.web_api.get_graph_state(session_id, graph_key)
                 except TimeoutError:
-                    state = GraphState.PREPARING
+                    state = JobState.PREPARING
             else:
                 state = self.web_api.get_graph_state(session_id, graph_key)
         except GraphNotExists:
             raise web.HTTPError(404, 'Graph not exists')
 
         resp = dict(state=state.value)
-        if state == GraphState.FAILED:
+        if state == JobState.FAILED:
             exc_info = self.web_api.get_graph_exc_info(session_id, graph_key)
             if exc_info is not None:
                 resp['exc_info'] = base64.b64encode(pickle.dumps(exc_info)).decode('ascii')

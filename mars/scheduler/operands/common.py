@@ -20,7 +20,7 @@ from ...config import options
 from ...errors import ExecutionInterrupted, DependencyMissing, WorkerDead
 from ...operands import Operand
 from ...utils import log_unhandled, insert_reversed_tuple
-from ..utils import GraphState, array_to_bytes
+from ..utils import JobState, array_to_bytes
 from .base import BaseOperandActor
 from .core import OperandState, register_operand_class, rewrite_worker_errors
 
@@ -518,7 +518,7 @@ class OperandActor(BaseOperandActor):
         futures = []
         if self._is_terminal:
             # update records in GraphActor to help decide if the whole graph finished execution
-            futures.extend(self._add_finished_terminal(final_state=GraphState.FAILED, exc=self._exc))
+            futures.extend(self._add_finished_terminal(final_state=JobState.FAILED, exc=self._exc))
         # set successors to FATAL
         for k in self._succ_keys:
             futures.append(self._get_operand_actor(k).stop_operand(
@@ -553,7 +553,7 @@ class OperandActor(BaseOperandActor):
     def _on_cancelled(self):
         futures = []
         if self._is_terminal:
-            futures.extend(self._add_finished_terminal(final_state=GraphState.CANCELLED))
+            futures.extend(self._add_finished_terminal(final_state=JobState.CANCELLED))
         for k in self._succ_keys:
             futures.append(self._get_operand_actor(k).stop_operand(
                 OperandState.CANCELLING, _tell=True, _wait=False))

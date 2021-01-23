@@ -20,7 +20,7 @@ from ..utils import classproperty
 from ..promise import PromiseActor
 
 
-class GraphState(Enum):
+class JobState(Enum):
     UNSCHEDULED = 'unscheduled'
     PREPARING = 'preparing'
     RUNNING = 'running'

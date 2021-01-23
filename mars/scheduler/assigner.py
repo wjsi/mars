@@ -36,9 +36,10 @@ class ChunkPriorityItem(object):
     """
     Class providing an order for operands for assignment
     """
-    def __init__(self, session_id, op_key, op_info, callback):
+    def __init__(self, session_id, job_id, op_key, op_info, callback):
         self._op_key = op_key
         self._session_id = session_id
+        self._job_id = job_id
         self._op_info = op_info
         self._target_worker = op_info.get('target_worker')
         self._callback = callback
@@ -65,6 +66,10 @@ class ChunkPriorityItem(object):
     @property
     def session_id(self):
         return self._session_id
+
+    @property
+    def job_id(self):
+        return self._job_id
 
     @property
     def op_key(self):
@@ -100,7 +105,7 @@ class AssignerActor(SchedulerActor):
     """
     @staticmethod
     def gen_uid(session_id):
-        return f's:h1:assigner${session_id}'
+        return f's:0:assigner@{session_id}'
 
     def __init__(self):
         super().__init__()
@@ -158,8 +163,8 @@ class AssignerActor(SchedulerActor):
             self._refresh_worker_metrics()
         return [w for w in workers if w in self._worker_metrics] if self._worker_metrics else []
 
-    def _enqueue_operand(self, session_id, op_key, op_info, callback=None):
-        priority_item = ChunkPriorityItem(session_id, op_key, op_info, callback)
+    def _enqueue_operand(self, session_id, job_id, op_key, op_info, callback=None):
+        priority_item = ChunkPriorityItem(session_id, job_id, op_key, op_info, callback)
         if priority_item.target_worker not in self._worker_metrics:
             priority_item.target_worker = None
         self._requests[op_key] = priority_item
@@ -182,13 +187,13 @@ class AssignerActor(SchedulerActor):
         self._actual_ref.allocate_top_resources(fetch_requests=True, _tell=True, _wait=False)
 
     @log_unhandled
-    def apply_for_multiple_resources(self, session_id, applications):
+    def apply_for_multiple_resources(self, session_id, job_id, applications):
         self._allocate_requests.append(len(applications))
         self._refresh_worker_metrics()
         logger.debug('%d operands applied for session %s', len(applications), session_id)
         for app in applications:
             op_key, op_info = app
-            self._enqueue_operand(session_id, op_key, op_info)
+            self._enqueue_operand(session_id, job_id, op_key, op_info)
         self._actual_ref.allocate_top_resources(fetch_requests=True, _tell=True)
 
     @log_unhandled
@@ -244,7 +249,7 @@ class AssignEvaluationActor(SchedulerActor):
     """
     @classmethod
     def gen_uid(cls, session_id):
-        return f's:0:{cls.__name__}${session_id}'
+        return f's:h1:{cls.__name__}@{session_id}'
 
     def __init__(self, assigner_ref):
         super().__init__()
@@ -311,7 +316,7 @@ class AssignEvaluationActor(SchedulerActor):
 
             try:
                 alloc_ep, rejects = self._allocate_resource(
-                    item.session_id, item.op_key, item.op_info, item.target_worker,
+                    item.session_id, item.job_id, item.op_key, item.op_info, item.target_worker,
                     reject_workers=reject_workers)
             except:  # noqa: E722
                 logger.exception('Unexpected error occurred in %s', self.uid)
@@ -340,10 +345,12 @@ class AssignEvaluationActor(SchedulerActor):
             self._assigner_ref.get_allocate_requests(_tell=True, _wait=False)
 
     @log_unhandled
-    def _allocate_resource(self, session_id, op_key, op_info, target_worker=None, reject_workers=None):
+    def _allocate_resource(self, session_id, job_id, op_key, op_info, target_worker=None,
+                           reject_workers=None):
         """
         Allocate resource for single operand
         :param session_id: session id
+        :param job_id: job id
         :param op_key: operand key
         :param op_info: operand info dict
         :param target_worker: worker to allocate, can be None
@@ -394,6 +401,8 @@ class AssignEvaluationActor(SchedulerActor):
         last_assign = self._session_last_assigns.get(session_id, time.time())
         timeout_on_fail = time.time() - last_assign > options.scheduler.assign_timeout
 
+        from .job import JobActor
+
         rejects = []
         for worker_ep in candidate_workers:
             if self._resource_ref.allocate_resource(
@@ -401,8 +410,8 @@ class AssignEvaluationActor(SchedulerActor):
                 logger.debug('Operand %s(%s) allocated to run in %s', op_key, op_info['op_name'], worker_ep)
                 self._mem_usage_cache.pop(op_key, None)
 
-                self.get_actor_ref(BaseOperandActor.gen_uid(session_id, op_key)) \
-                    .submit_to_worker(worker_ep, input_metas, _tell=True, _wait=False)
+                self.get_actor_ref(JobActor.gen_uid(session_id, job_id)) \
+                    .set_operand_worker(op_key, worker_ep, input_metas, _tell=True, _wait=False)
                 return worker_ep, rejects
             else:
                 rejects.append(worker_ep)
